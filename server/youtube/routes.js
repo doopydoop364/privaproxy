@@ -1,0 +1,250 @@
+"use strict";
+const express = require("express");
+const { Readable } = require("stream");
+const yt = require("./ytdlp");
+const hlsLib = require("./hls");
+
+const router = express.Router();
+
+const FORMAT_RE = /^[A-Za-z0-9._-]{1,40}$/;
+
+const STATUS_BY_CODE = {
+  bad_id: 400,
+  unavailable: 404,
+  not_installed: 503,
+  timeout: 504,
+  bot_check: 502,
+  js_runtime: 502,
+  network: 502,
+  bad_flag: 500,
+  failed: 502,
+};
+
+function sendError(res, err) {
+  if (err instanceof yt.YtdlpError) {
+    return res.status(STATUS_BY_CODE[err.code] || 502).json({
+      error: err.code,
+      message: err.message,
+      detail: err.detail || undefined,
+    });
+  }
+  console.error("YouTube route error:", err);
+  return res.status(500).json({ error: "internal", message: "Unexpected server error." });
+}
+
+// ---------- shared upstream helpers ----------
+
+const cancelBody = (up) => up.body && up.body.cancel().catch(() => {});
+
+// Abort upstream work as soon as the browser goes away (seek, tab change, navigation).
+function abortOnClose(res) {
+  const ac = new AbortController();
+  res.on("close", () => ac.abort());
+  return ac;
+}
+
+// Copy the useful upstream headers and stream the body to the client.
+function pipeUpstream(req, res, up, fallbackType) {
+  res.status(up.status);
+  for (const h of ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"]) {
+    const v = up.headers.get(h);
+    if (v) res.setHeader(h, v);
+  }
+  if (!res.getHeader("accept-ranges")) res.setHeader("accept-ranges", "bytes");
+  if (!res.getHeader("content-type")) res.setHeader("content-type", fallbackType);
+  res.setHeader("cache-control", "private, max-age=0");
+
+  if (req.method === "HEAD" || !up.body) {
+    cancelBody(up);
+    return res.end();
+  }
+  Readable.fromWeb(up.body)
+    .on("error", () => res.destroy())
+    .pipe(res);
+}
+
+// Read an upstream body into memory, refusing anything over `max` bytes.
+async function readCapped(up, max) {
+  const chunks = [];
+  let n = 0;
+  for await (const chunk of Readable.fromWeb(up.body)) {
+    n += chunk.length;
+    if (n > max) return null;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+// Rewrite an upstream m3u8 so every URL in it comes back through /hls/seg/.
+async function sendPlaylist(res, up, requestedUrl, headers) {
+  const buf = up.body ? await readCapped(up, hlsLib.MAX_PLAYLIST_BYTES) : Buffer.alloc(0);
+  if (!buf) return res.status(502).json({ error: "playlist_too_large", message: "YouTube returned an unexpectedly large playlist." });
+  const text = buf.toString("utf8");
+  if (!text.trimStart().startsWith("#EXTM3U"))
+    return res.status(502).json({ error: "invalid_playlist", message: "YouTube didn't return a valid HLS playlist." });
+  let body;
+  try {
+    body = hlsLib.rewritePlaylist(text, up.url || requestedUrl, headers);
+  } catch (err) {
+    if (err instanceof hlsLib.PlaylistError)
+      return res.status(502).json({ error: "invalid_playlist", message: "The HLS playlist contained something we won't proxy." });
+    throw err;
+  }
+  res.status(200).set({ "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" }).send(body);
+}
+
+// ---- GET /api/youtube/status ----
+router.get("/status", async (req, res) => {
+  try {
+    res.json(await yt.status());
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/search?q=...&limit=20 ----
+router.get("/search", async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (!q) return res.status(400).json({ error: "bad_request", message: "Missing ?q=" });
+  if (q.length > 200) return res.status(400).json({ error: "bad_request", message: "Query too long." });
+  try {
+    res.json({ results: await yt.search(q, req.query.limit) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/video/:id ----
+// Metadata + the directly playable qualities (`streams`) + whether adaptive
+// HLS playback is available (`hls`). Never exposes YouTube URLs.
+router.get("/video/:id", async (req, res) => {
+  try {
+    res.json(await yt.getVideo(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/stream/:id?f=<formatId> ----
+// Proxies a combined audio+video file with Range support. yt-dlp's URLs can
+// depend on the headers it used, so we fetch them server-side with those.
+// If YouTube rejects a cached URL (expired), we refresh it once and retry.
+router.get("/stream/:id", async (req, res) => {
+  const { id } = req.params;
+  const f = req.query.f;
+  if (!yt.ID_RE.test(id)) return res.status(400).json({ error: "bad_id", message: "Invalid video id." });
+  if (f !== undefined && (typeof f !== "string" || !FORMAT_RE.test(f)))
+    return res.status(400).json({ error: "bad_request", message: "Invalid format." });
+
+  const ac = abortOnClose(res);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let target;
+    try {
+      target = await yt.resolveStream(id, f);
+    } catch (err) {
+      return sendError(res, err);
+    }
+    if (!target)
+      return res.status(404).json({ error: "no_such_format", message: "That quality isn't available for this video." });
+
+    let up;
+    try {
+      const headers = { ...target.headers };
+      if (req.headers.range) headers.Range = req.headers.range;
+      up = await fetch(target.url, { headers, signal: ac.signal, redirect: "follow" });
+    } catch {
+      if (ac.signal.aborted) return;
+      return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't reach YouTube's video servers." });
+    }
+
+    if ([403, 404, 410].includes(up.status) && attempt === 0) {
+      cancelBody(up);
+      yt.invalidateVideo(id); // cached URL likely expired: re-run yt-dlp once
+      continue;
+    }
+    if (!up.ok && up.status !== 416) {
+      cancelBody(up);
+      return res.status(502).json({ error: "upstream_error", message: `YouTube's video servers returned ${up.status}.` });
+    }
+    return pipeUpstream(req, res, up, target.ext === "webm" ? "video/webm" : "video/mp4");
+  }
+});
+
+// ---- GET /api/youtube/hls/:id/master.m3u8 ----
+// The adaptive-stream entry point for hls.js. Fetches YouTube's master playlist
+// and rewrites it so every further request comes back through /hls/seg/.
+router.get("/hls/:id/master.m3u8", async (req, res) => {
+  const { id } = req.params;
+  if (!yt.ID_RE.test(id)) return res.status(400).json({ error: "bad_id", message: "Invalid video id." });
+  const ac = abortOnClose(res);
+
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let hls;
+      try {
+        hls = await yt.resolveHls(id);
+      } catch (err) {
+        return sendError(res, err);
+      }
+      if (!hls) return res.status(404).json({ error: "no_hls", message: "No adaptive (HLS) stream is available for this video." });
+
+      let up;
+      try {
+        up = await fetch(hls.url, { headers: hls.headers, signal: ac.signal, redirect: "follow" });
+      } catch {
+        if (ac.signal.aborted) return;
+        return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't reach YouTube's servers." });
+      }
+      if ([403, 404, 410].includes(up.status) && attempt === 0) {
+        cancelBody(up);
+        yt.invalidateVideo(id); // expired manifest URL: refresh once
+        continue;
+      }
+      if (!up.ok) {
+        cancelBody(up);
+        return res.status(502).json({ error: "upstream_error", message: `YouTube returned ${up.status} for the stream list.` });
+      }
+      return await sendPlaylist(res, up, hls.url, hls.headers);
+    }
+  } catch (err) {
+    if (ac.signal.aborted) return;
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/hls/seg/:token ----
+// Serves anything reachable from a master playlist: variant playlists (rewritten
+// again) and media segments (streamed, Range-aware). Tokens only exist for URLs
+// we found inside a manifest, so this can't be used to fetch arbitrary URLs.
+router.get("/hls/seg/:token", async (req, res) => {
+  const entry = hlsLib.lookup(req.params.token);
+  if (!entry) return res.status(404).json({ error: "unknown_segment", message: "Unknown or expired stream reference." });
+  const ac = abortOnClose(res);
+
+  try {
+    const headers = { ...entry.headers };
+    if (req.headers.range && !hlsLib.isPlaylist("", entry.url)) headers.Range = req.headers.range;
+
+    let up;
+    try {
+      up = await fetch(entry.url, { headers, signal: ac.signal, redirect: "follow" });
+    } catch {
+      if (ac.signal.aborted) return;
+      return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't reach YouTube's servers." });
+    }
+    if (!up.ok && up.status !== 416) {
+      cancelBody(up);
+      return res.status(502).json({ error: "upstream_error", message: `YouTube returned ${up.status}.` });
+    }
+    if (hlsLib.isPlaylist(up.headers.get("content-type"), entry.url)) {
+      return await sendPlaylist(res, up, entry.url, entry.headers);
+    }
+    return pipeUpstream(req, res, up, "application/octet-stream");
+  } catch (err) {
+    if (ac.signal.aborted) return;
+    sendError(res, err);
+  }
+});
+
+module.exports = router;

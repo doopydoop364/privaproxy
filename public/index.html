@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>privaproxy</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">privaproxy</div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-view="browser" role="tab">Browser</button>
+      <button class="tab" data-view="youtube" role="tab">YouTube</button>
+    </nav>
+
+    <div class="proxy-select">
+      <select id="enginePicker" aria-label="Choose proxy engine">
+        <option value="uv">Ultraviolet</option>
+        <option value="scramjet">Scramjet</option>
+      </select>
+      <span class="proxy-dot" id="proxyDot"></span>
+      <select id="proxyPicker" aria-label="Choose proxy backend"></select>
+    </div>
+  </header>
+
+  <!-- BROWSER VIEW -->
+  <section id="view-browser" class="view is-active">
+    <div class="browser-toolbar">
+      <div class="tabstrip" id="tabStrip">
+        <button class="tabstrip-new" id="newTabBtn" title="New tab" type="button">+</button>
+      </div>
+
+      <form id="browseForm" class="address-bar">
+        <button type="button" id="backBtn" class="nav-btn" title="Back" disabled>&#8592;</button>
+        <button type="button" id="forwardBtn" class="nav-btn" title="Forward" disabled>&#8594;</button>
+        <input
+          id="urlInput"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Enter a URL or search term"
+        />
+        <button type="submit">Go</button>
+      </form>
+    </div>
+
+    <div class="frame-wrap" id="frameWrap">
+      <div id="browserEmpty" class="empty-state">
+        <p>Nothing loaded yet.</p>
+        <p class="empty-sub">Type a URL above and hit Go — it'll route through the selected proxy.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- YOUTUBE VIEW -->
+  <section id="view-youtube" class="view">
+    <form id="ytSearchForm" class="address-bar yt">
+      <input
+        id="ytSearchInput"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Search YouTube  (press / to focus)"
+      />
+      <button type="submit">Search</button>
+    </form>
+
+    <div id="ytBanner" class="yt-banner" role="alert" hidden></div>
+
+    <div id="ytPlayerWrap" class="yt-player-wrap" hidden>
+      <div id="ytPlayer" class="yt-player" tabindex="-1">
+        <video id="ytVideo" playsinline preload="metadata"></video>
+        <div id="ytSpinner" class="yt-spinner" hidden></div>
+        <div id="ytPlayerMsg" class="yt-player-msg" hidden></div>
+        <div class="yt-controls">
+          <input id="ytSeek" class="yt-range yt-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek" />
+          <div class="yt-ctl-row">
+            <button id="ytPlayBtn" class="yt-btn" type="button" aria-label="Play"></button>
+            <button id="ytNextBtn" class="yt-btn" type="button" aria-label="Next in queue" disabled></button>
+            <button id="ytMuteBtn" class="yt-btn" type="button" aria-label="Mute"></button>
+            <input id="ytVolume" class="yt-range yt-volume" type="range" min="0" max="100" value="100" aria-label="Volume" />
+            <span id="ytTime" class="yt-time">0:00 / 0:00</span>
+            <span class="spacer"></span>
+            <select id="ytSpeed" class="yt-select" aria-label="Playback speed"></select>
+            <select id="ytQuality" class="yt-select" aria-label="Quality" disabled></select>
+            <button id="ytFullscreen" class="yt-btn" type="button" aria-label="Fullscreen"></button>
+          </div>
+        </div>
+      </div>
+      <div class="yt-now-playing">
+        <h2 id="ytTitle"></h2>
+        <p id="ytChannel" class="yt-channel"></p>
+        <p class="yt-hint">Shortcuts: Space/K play &middot; J/L &plusmn;10s &middot; &larr;/&rarr; &plusmn;5s &middot; &uarr;/&darr; volume &middot; M mute &middot; F fullscreen &middot; 0&ndash;9 jump &middot; &lt; &gt; speed &middot; N next &middot; / search</p>
+      </div>
+    </div>
+
+    <div id="ytQueue" class="yt-queue" hidden>
+      <div class="yt-queue-head">
+        <span>Up next</span>
+        <button id="ytQueueClear" class="yt-link-btn" type="button">Clear</button>
+      </div>
+      <ol id="ytQueueList"></ol>
+    </div>
+
+    <div id="ytResults" class="yt-grid"></div>
+    <div id="ytEmpty" class="yt-empty">
+      <p id="ytEmptyMain">No search yet.</p>
+      <p id="ytEmptySub" class="yt-hint">Videos play through your local yt-dlp, with no ads.</p>
+    </div>
+  </section>
+
+  <script src="/uv/uv.bundle.js"></script>
+  <script src="/uv/uv.config.js"></script>
+  <script src="/scramjet/scramjet.all.js"></script>
+  <script type="module" src="/js/app.js"></script>
+  <script src="/vendor/hls/hls.min.js"></script>
+  <script src="/js/youtube.js"></script>
+</body>
+</html>

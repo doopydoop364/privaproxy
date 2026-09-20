@@ -1,0 +1,16 @@
+[
+  {
+    "id": "bare-primary",
+    "name": "Primary",
+    "description": "Default local bare server.",
+    "bareEndpoint": "/bare/",
+    "testUrl": "https://www.gstatic.com/generate_204"
+  },
+  {
+    "id": "bare-secondary",
+    "name": "Secondary",
+    "description": "A second local bare server instance, proving the switching mechanism works. Point its bareEndpoint at a real remote server's URL to make this a genuinely different exit point.",
+    "bareEndpoint": "/bare2/",
+    "testUrl": "https://www.gstatic.com/generate_204"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "name": "privaproxy",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@mercuryworkshop/bare-as-module3": "^2.2.5",
+    "@mercuryworkshop/bare-mux": "^2.1.9",
+    "@mercuryworkshop/scramjet": "^1.1.0",
+    "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
+    "@tomphttp/bare-server-node": "^2.0.6",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "hls.js": "^1.7.3"
+  }
+}
