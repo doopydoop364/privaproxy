@@ -42,7 +42,7 @@ async function measureOne(entry, origin) {
 }
 
 let started = false;
-function start(bareServerEntries, origin, intervalMs = 20000) {
+function start(bareServerEntries, origin, intervalMs = 1000) {
   if (started) return; // only run one set of intervals regardless of how many times this is called
   started = true;
 
