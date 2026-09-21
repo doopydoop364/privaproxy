@@ -136,45 +136,28 @@ test("an old saved 360p preference doesn't hide the higher qualities", async () 
   assert.equal(JSON.parse(env.store.get("ytQuality")), 360, "a chosen quality is remembered under the new key");
 });
 
-test("audio that is slow to start does not deadlock playback", async () => {
-  const env = boot();
-  await submit(env, "https://youtu.be/aaaaaaaaaaa");
-  const video = env.byId.get("ytVideo");
-  const audio = env.audios[0];
-  await tick(); // the initial video.play() has fired its "play" event; audio.play() was called
-  assert.equal(video.paused, false);
-  assert.ok(audio.plays > 0, "audio was started alongside the video");
-
-  // audio has nothing buffered yet: browsers report "waiting" on it
-  audio.dispatch("waiting");
-  await tick();
-  assert.equal(video.paused, true, "video is held while audio buffers");
-  assert.equal(audio.paused, false, "...but the audio must keep loading/playing, or nothing can ever resume");
-
-  audio.dispatch("playing"); // audio has data now
-  await tick();
-  assert.equal(video.paused, false, "video resumes once audio is ready");
-  assert.equal(env.byId.get("ytSpinner").hidden, true, "no spinner left over");
-});
-
-test("if the audio never starts, the video is not held forever", async () => {
+test("a slow-starting audio never stops the video, and starts once the video is playing", async () => {
   const env = boot();
   await submit(env, "https://youtu.be/aaaaaaaaaaa");
   const video = env.byId.get("ytVideo");
   const audio = env.audios[0];
   await tick();
-  audio.dispatch("waiting"); // ...and "playing" never comes (e.g. autoplay blocked)
-  await tick();
-  assert.equal(video.paused, true);
-  const watchdog = env.timers.find((t) => t.ms === 5000);
-  assert.ok(watchdog, "a watchdog is armed while holding");
-  watchdog.fn();
-  await tick();
-  assert.equal(video.src, "/api/youtube/stream/aaaaaaaaaaa?f=18", "gave up on the separate audio and switched to the combined stream");
   assert.equal(video.paused, false);
+  // real-browser order at startup: the video reports "waiting" (nothing buffered yet)...
+  video.dispatch("waiting");
+  audio.dispatch("waiting"); // ...and so does the audio; neither may pause the video
+  await tick();
+  assert.equal(video.paused, false, "the video is never held for the audio");
+  // data arrives: the video is "playing" and drags the audio along
+  video.currentTime = 0.4;
+  video.dispatch("playing");
+  await tick();
+  assert.equal(audio.currentTime, 0.4);
+  assert.equal(audio.paused, false);
+  assert.equal(env.byId.get("ytSpinner").hidden, true);
 });
 
-test("a user pause is not undone by the audio-stall logic", async () => {
+test("pause, resume and user pause keep the audio in step", async () => {
   const env = boot();
   await submit(env, "https://youtu.be/aaaaaaaaaaa");
   const video = env.byId.get("ytVideo");
@@ -187,6 +170,21 @@ test("a user pause is not undone by the audio-stall logic", async () => {
   audio.dispatch("playing");
   await tick();
   assert.equal(video.paused, true, "audio events never resume a video the user paused");
+  env.byId.get("ytPlayBtn").click(); // user resumes
+  await tick();
+  assert.equal(video.paused, false);
+  assert.equal(audio.paused, false);
+});
+
+test("an audio load error falls back to the combined stream", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  const video = env.byId.get("ytVideo");
+  await tick();
+  env.audios[0].dispatch("error");
+  await tick();
+  assert.equal(video.src, "/api/youtube/stream/aaaaaaaaaaa?f=18");
+  assert.match(env.byId.get("ytPlayerMsg").textContent, /Switched to 360p/);
 });
 
 test("channel link, subscribe, and the subscriptions feed", async () => {

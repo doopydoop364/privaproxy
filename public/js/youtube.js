@@ -796,7 +796,9 @@
 
   // ---------- separate audio kept in step with the video ----------
 
-  let heldForAudio = false; // true while WE paused the video to wait for the audio
+  // The audio follows the video, never the other way round: it starts/stops with the video's
+  // play/pause/waiting, and any drift is corrected on timeupdate. (The video is never held for
+  // the audio: doing that fought with the video's own "waiting" handling and could deadlock.)
   const audioPlay = () => {
     const p = audio.play();
     if (p && p.catch) p.catch(() => {});
@@ -806,9 +808,7 @@
     audio.currentTime = video.currentTime;
     audioPlay();
   });
-  // (Not while we paused the video ourselves to wait for the audio: pausing the audio
-  // then would stop the very thing we're waiting for, and playback would never resume.)
-  video.addEventListener("pause", () => adaptiveActive && !heldForAudio && audio.pause());
+  video.addEventListener("pause", () => adaptiveActive && audio.pause());
   video.addEventListener("waiting", () => adaptiveActive && audio.pause());
   video.addEventListener("playing", () => {
     if (!adaptiveActive) return;
@@ -831,40 +831,6 @@
     const fix = driftCorrection(video.currentTime, audio.currentTime);
     if (fix !== null) audio.currentTime = fix;
   });
-  // If the audio stalls while the video keeps going, hold the video until audio catches up
-  // (otherwise the drift grows and the correction above would be audible).
-  // ...but never for long: if the audio can't start (blocked autoplay, a dead stream), give up
-  // on it rather than leave the video loading forever.
-  const AUDIO_HOLD_MS = 5000;
-  let holdTimer = null;
-  const releaseHold = () => {
-    heldForAudio = false;
-    clearTimeout(holdTimer);
-  };
-  audio.addEventListener("waiting", () => {
-    if (!adaptiveActive || video.paused) return;
-    heldForAudio = true;
-    video.pause();
-    setBuffering(true);
-    clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => {
-      if (!heldForAudio) return;
-      releaseHold();
-      if (!fallBackFromAdaptive("The audio for that quality is too slow to load.", true)) {
-        setBuffering(false);
-        const p = video.play();
-        if (p && p.catch) p.catch(() => {});
-      }
-    }, AUDIO_HOLD_MS);
-  });
-  audio.addEventListener("playing", () => {
-    if (!heldForAudio) return;
-    releaseHold();
-    setBuffering(false);
-    const p = video.play();
-    if (p && p.catch) p.catch(() => {});
-  });
-  video.addEventListener("play", releaseHold); // someone (or something) resumed: no longer waiting on audio
   audio.addEventListener("error", () => {
     if (!adaptiveActive) return;
     if (!fallBackFromAdaptive("The audio for that quality couldn't be played.")) {
@@ -1172,7 +1138,6 @@
 
   function togglePlay() {
     if (!hasMedia()) return;
-    releaseHold(); // an explicit user choice wins over an automatic hold
     if (video.paused) {
       const p = video.play();
       if (p && p.catch) p.catch(() => {});
