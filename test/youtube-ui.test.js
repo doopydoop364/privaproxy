@@ -10,10 +10,12 @@ const { makeEnv, tick } = require("./helpers/fakeDom");
 
 const CH = "UC4QobU6STFB0P71PMvOGN5A";
 const PL = "PLF3eNE6vR-4WsBf8qnJLqBywqX39QczxJ";
+const AVATAR = `/api/youtube/channel-image/${CH}/avatar`;
+const BANNER = `/api/youtube/channel-image/${CH}/banner`;
 const WEEKS = (n) => Math.floor(Date.now() / 1000) - n * 7 * 86400;
 const item = (id, title) => ({ id, title, author: "Someone", channelId: CH, duration: 100, views: 5, isLive: false, uploadedAt: WEEKS(3), uploadedApprox: true, thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` });
 const CHANNEL_META = {
-  id: CH, name: "Someone", avatar: "https://yt3.googleusercontent.com/AV=s96-c", banner: "https://yt3.googleusercontent.com/BN=w1707",
+  id: CH, name: "Someone", avatar: `/api/youtube/channel-image/${CH}/avatar`, banner: `/api/youtube/channel-image/${CH}/banner`,
   followers: 518000000, verified: true, handle: "@someone", description: "About this channel",
 };
 
@@ -39,7 +41,9 @@ function boot(seed) {
       if (url.startsWith("/api/youtube/subscriptions")) return { status: 200, body: { results: [item("bbbbbbbbbbb", "Video B")], hasMore: false } };
       if (url.startsWith("/api/youtube/video/")) return { status: 200, body: { ...VIDEO, id: url.split("/").pop() } };
       if (url.startsWith("/api/youtube/sponsorblock/")) return { status: 200, body: { segments: [{ start: 10, end: 20, category: "sponsor" }] } };
-      if (url.startsWith("/api/youtube/related/") || url.startsWith("/api/youtube/home")) return { status: 200, body: { results: [], hasMore: false } };
+      if (url.startsWith("/api/youtube/related/")) return { status: 200, body: { results: [{ ...item("rrrrrrrrrrr", "Mix video"), uploadedAt: null, uploadedApprox: false }, { ...item("sssssssssss", "Mix video 2"), uploadedAt: null, uploadedApprox: false }], hasMore: false } };
+      if (url.startsWith("/api/youtube/dates")) return { status: 200, body: { dates: { rrrrrrrrrrr: Math.floor(Date.now() / 1000) - 2 * 365.25 * 86400 - 5 * 86400 } } };
+      if (url.startsWith("/api/youtube/home")) return { status: 200, body: { results: [], hasMore: false } };
       return { status: 404, body: { error: "nope", message: "unexpected request " + url } };
     },
   });
@@ -78,7 +82,7 @@ test("pasting a playlist link opens it, lists videos and offers Play all", async
   assert.equal(tabBtn(env, "playlist").hidden, false);
   assert.match(tabBtn(env, "playlist").textContent, /My list/);
   assert.equal(feedSection(env, "playlist").hidden, false);
-  const playAll = feedSection(env, "playlist").querySelectorAll(".yt-sub-btn").find((b) => b.textContent === "Play all");
+  const playAll = feedSection(env, "playlist").querySelectorAll(".yt-action-btn").find((b) => b.textContent === "Play all");
   playAll.click();
   await tick();
   assert.equal(env.byId.get("ytQueueList").children.length, 2, "the other two videos are queued");
@@ -276,11 +280,11 @@ test("resume position, history page, loop, theater and speed memory", async () =
 });
 
 test("cards show views and time since upload, plus an icon for channels we know", async () => {
-  const env = boot({ ytChannelInfo: JSON.stringify({ [CH]: { name: "Someone", icon: "https://yt3.googleusercontent.com/AV=s96-c" } }) });
+  const env = boot({ ytChannelInfo: JSON.stringify({ [CH]: { name: "Someone", icon: AVATAR } }) });
   await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
   const card = cards(env, "playlist")[0];
   assert.match(card.querySelector(".yt-card-meta").textContent, /^5 views • 3 weeks ago$/);
-  assert.equal(card.querySelector(".yt-avatar-sm").src, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(card.querySelector(".yt-avatar-sm").src, AVATAR);
   // an unknown channel gets no icon (flat lists don't carry one)
   const env2 = boot();
   await submit(env2, `https://www.youtube.com/playlist?list=${PL}`);
@@ -291,26 +295,26 @@ test("channel page shows banner, avatar, handle, subscribers and remembers the i
   const env = boot();
   await submit(env, `https://www.youtube.com/channel/${CH}`);
   const head = feedSection(env, "channel");
-  assert.equal(head.querySelector(".yt-channel-banner").src, "https://yt3.googleusercontent.com/BN=w1707");
-  assert.equal(head.querySelector(".yt-avatar-lg").src, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(head.querySelector(".yt-channel-banner").src, BANNER);
+  assert.equal(head.querySelector(".yt-avatar-lg").src, AVATAR);
   assert.equal(head.querySelector(".yt-feed-title").textContent, "Someone✓");
   assert.equal(head.querySelector(".yt-channel-sub").textContent, "@someone • 518M subscribers");
   assert.equal(head.querySelector(".yt-channel-desc").textContent, "About this channel");
-  assert.equal(JSON.parse(env.store.get("ytChannelInfo"))[CH].icon, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(JSON.parse(env.store.get("ytChannelInfo"))[CH].icon, AVATAR);
   // subscribing keeps the icon for the Subscriptions chips
   head.querySelector(".yt-sub-btn").click();
-  assert.equal(JSON.parse(env.store.get("ytSubs"))[0].icon, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(JSON.parse(env.store.get("ytSubs"))[0].icon, AVATAR);
   tabBtn(env, "subs").dispatch("click");
   await tick();
-  assert.equal(feedSection(env, "subs").querySelector(".yt-avatar-sm").src, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(feedSection(env, "subs").querySelector(".yt-avatar-sm").src, AVATAR);
 });
 
-test("a channel image from any other host is never rendered", async () => {
+test("only our own channel-image route (or YouTube thumbnails) is ever rendered as an image", async () => {
   const env = boot();
   env.sandbox.fetch = async (url) => {
     env.requests.push(url);
     const body = url.startsWith("/api/youtube/channel/")
-      ? { channel: { ...CHANNEL_META, avatar: "https://evil.example/a.png", banner: "javascript:alert(1)" }, results: [], hasMore: false }
+      ? { channel: { ...CHANNEL_META, avatar: "https://evil.example/a.png", banner: "https://yt3.googleusercontent.com/direct=s0" }, results: [], hasMore: false }
       : { results: [], hasMore: false };
     return { ok: true, status: 200, json: async () => body };
   };
@@ -326,7 +330,7 @@ test("the player shows views, upload time and the channel icon (fetched once, th
   assert.equal(env.byId.get("ytMeta").textContent, "1.5K views • 2 weeks ago");
   const icon = env.byId.get("ytChannelIcon");
   assert.equal(icon.hidden, false);
-  assert.equal(icon.src, "https://yt3.googleusercontent.com/AV=s96-c");
+  assert.equal(icon.src, AVATAR);
   assert.equal(env.requests.filter((u) => u.startsWith(`/api/youtube/channel/${CH}`)).length, 1);
   // a second video from the same channel already knows the icon: no extra channel request
   await submit(env, "https://youtu.be/bbbbbbbbbbb");
@@ -384,4 +388,107 @@ test("caption style and position are applied to cues, and saved styles are valid
   video.textTracks = [{ cues }];
   track.dispatch("load");
   assert.deepEqual(cues.map((c) => [c.line, c.snapToLines]), [[0, true], [0, true]]);
+});
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test("cards without a date (YouTube Mixes) get one looked up in the background", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa"); // playing shows Related, a Mix: no dates
+  await tick();
+  const related = cards(env, "related");
+  assert.equal(related.length, 2);
+  assert.equal(related[0].querySelector(".yt-card-meta").textContent, "5 views", "no date yet");
+  await sleep(450); // the lookup is batched after a short delay
+  const asked = env.requests.filter((u) => u.startsWith("/api/youtube/dates"));
+  assert.equal(asked.length, 1, "one batched request for both cards");
+  assert.equal(asked[0], "/api/youtube/dates?ids=rrrrrrrrrrr,sssssssssss");
+  assert.equal(related[0].querySelector(".yt-card-meta").textContent, "5 views • 2 years ago");
+  assert.equal(related[1].querySelector(".yt-card-meta").textContent, "5 views", "unknown stays blank rather than wrong");
+  // the same videos are never asked about twice
+  tabBtn(env, "home").dispatch("click");
+  tabBtn(env, "related").dispatch("click");
+  await sleep(450);
+  assert.equal(env.requests.filter((u) => u.startsWith("/api/youtube/dates")).length, 1);
+});
+
+test("cards that already have dates don't trigger any lookup", async () => {
+  const env = boot();
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  await sleep(450);
+  assert.equal(env.requests.some((u) => u.startsWith("/api/youtube/dates")), false);
+});
+
+test("the Close button stops the video and goes back to Home", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  await tick();
+  const video = env.byId.get("ytVideo");
+  assert.equal(env.byId.get("ytPlayerWrap").hidden, false);
+  assert.ok(video.src);
+  video.currentTime = 42;
+  env.byId.get("ytClose").click();
+  assert.equal(env.byId.get("ytPlayerWrap").hidden, true, "player hidden");
+  assert.equal(video.getAttribute("src"), null, "media source released");
+  assert.equal(video.paused, true);
+  assert.equal(env.audios[0].getAttribute("src"), null, "separate audio released too");
+  assert.equal(feedSection(env, "home").hidden, false, "back on Home");
+  assert.equal(feedSection(env, "related").hidden, true);
+  assert.equal(tabBtn(env, "related").hidden, true, "the Related tab belonged to that video");
+  assert.equal(JSON.parse(env.store.get("ytResume")).aaaaaaaaaaa, 42, "position saved before closing");
+  // closing while a video is still loading must not let it start afterwards
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const realFetch = env.sandbox.fetch;
+  env.sandbox.fetch = async (url) => {
+    if (url.startsWith("/api/youtube/video/bbbbbbbbbbb")) await gate; // hold this lookup open
+    return realFetch(url);
+  };
+  await submit(env, "https://youtu.be/bbbbbbbbbbb");
+  assert.equal(env.byId.get("ytPlayerWrap").hidden, false, "loading state is shown");
+  env.byId.get("ytClose").click();
+  release(); // the lookup now completes, after the viewer closed the player
+  await tick(10);
+  assert.equal(env.byId.get("ytPlayerWrap").hidden, true, "still closed");
+  assert.equal(video.getAttribute("src"), null, "the late response must not start playback");
+  assert.equal(tabBtn(env, "related").hidden, true, "nor bring the Related tab back");
+});
+
+test("a channel image that fails to load is removed instead of shown broken", async () => {
+  const env = boot();
+  await submit(env, `https://www.youtube.com/channel/${CH}`);
+  const sec = feedSection(env, "channel");
+  const banner = sec.querySelector(".yt-channel-banner");
+  const avatar = sec.querySelector(".yt-avatar-lg");
+  assert.ok(banner && avatar);
+  banner.dispatch("error");
+  avatar.dispatch("error");
+  assert.equal(sec.querySelector(".yt-channel-banner"), null);
+  assert.equal(sec.querySelector(".yt-avatar-lg"), null);
+});
+
+test("icons saved by older versions (direct Google URLs) are shown via our route", async () => {
+  const env = boot({ ytChannelInfo: JSON.stringify({ [CH]: { name: "Someone", icon: "https://yt3.googleusercontent.com/old=s96-c" } }) });
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  assert.equal(cards(env, "playlist")[0].querySelector(".yt-avatar-sm").src, AVATAR, "never the direct Google URL");
+});
+
+test("subscribing never rewrites other buttons (Close, Play all, Export...)", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  await tick();
+  env.byId.get("ytSubBtn").click(); // subscribe from the player: re-syncs every Subscribe button
+  assert.equal(env.byId.get("ytSubBtn").textContent, "Subscribed ✓");
+  env.byId.get("ytClose").textContent = "✕ Close"; // (the fake DOM doesn't parse the label from index.html)
+  env.byId.get("ytSubBtn").click(); // and back
+  assert.equal(env.byId.get("ytClose").textContent, "✕ Close");
+
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  tabBtn(env, "history").dispatch("click");
+  await tick();
+  env.byId.get("ytSubBtn").click();
+  const labels = feedSection(env, "history").querySelectorAll(".yt-action-btn").map((b) => b.textContent);
+  assert.deepEqual(labels, ["Export JSON", "Import JSON"]);
+  const html = require("fs").readFileSync(require("path").join(__dirname, "../public/index.html"), "utf8");
+  assert.match(html, /<button id="ytClose" class="yt-action-btn"[^>]*>✕ Close<\/button>/, "the real page uses the plain button class");
 });

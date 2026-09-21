@@ -9,8 +9,10 @@ function matches(node, sel) {
   return parts.every((p) => {
     if (p[0] === ".") return node.classList.contains(p.slice(1));
     if (p[0] === "[") {
-      const m = /^\[data-([\w-]+)="([^"]*)"\]$/.exec(p);
-      return m ? node.dataset[m[1].replace(/-(\w)/g, (_, c) => c.toUpperCase())] === m[2] : false;
+      const m = /^\[data-([\w-]+)(?:="([^"]*)")?\]$/.exec(p); // [data-x] or [data-x="y"]
+      if (!m) return false;
+      const v = node.dataset[m[1].replace(/-(\w)/g, (_, c) => c.toUpperCase())];
+      return m[2] === undefined ? v !== undefined : v === m[2];
     }
     return node.tagName === p.toUpperCase();
   });
@@ -69,7 +71,10 @@ class El {
   dispatch(t, ev = {}) {
     let stopped = false;
     const event = { target: this, preventDefault() {}, stopPropagation() { stopped = true; }, key: "", ...ev };
-    for (let n = this; n && !stopped; n = n.parent) for (const f of n.listeners[t] || []) f(event);
+    for (let n = this; n && !stopped; n = n.parent) {
+      for (const f of n.listeners[t] || []) f(event);
+      if (t === "click" && typeof n.onclick === "function") n.onclick(event); // the `onclick` property, like a browser
+    }
     // the event then reaches document-level listeners, as in a browser
     if (!stopped && El.documentListeners) for (const f of El.documentListeners[t] || []) f(event);
   }
@@ -116,7 +121,7 @@ function makeEnv({ respond, seed = {} }) {
   const root = new El("body");
   const ids = ["view-youtube", "ytSearchForm", "ytSearchInput", "ytBanner", "ytFeedTabs", "ytFeeds", "ytClearHistory", "ytPlayerWrap", "ytPlayer", "ytVideo",
     "ytSpinner", "ytPlayerMsg", "ytSeek", "ytPlayBtn", "ytNextBtn", "ytMuteBtn", "ytVolume", "ytTime", "ytSpeed", "ytQuality", "ytFullscreen", "ytTitle", "ytChannel",
-    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel"];
+    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel", "ytClose"];
   for (const id of ids) {
     const e = new El(id === "ytVideo" ? "video" : id === "ytSearchInput" ? "input" : "div");
     byId.set(id, e);
@@ -133,6 +138,8 @@ function makeEnv({ respond, seed = {} }) {
   }
   byId.get("view-youtube").classList.add("is-active");
   byId.get("ytPlayerWrap").hidden = true;
+  byId.get("ytSubBtn").classList.add("yt-sub-btn"); // classes index.html gives these buttons
+  byId.get("ytClose").classList.add("yt-action-btn");
   byId.get("ytSubBtn").hidden = true;
   byId.get("ytChannelIcon").hidden = true;
   byId.get("ytCaptionStyleBtn").classList.add("yt-cc-style"); // classes the page's selectors rely on

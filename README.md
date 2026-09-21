@@ -189,6 +189,13 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   `description`; image URLs are only passed through if they're on YouTube's
   avatar hosts. Each result also has `uploadedAt` (epoch seconds) and
   `uploadedApprox`.
+- `GET /api/youtube/channel-image/:id/(avatar|banner)` -- a channel's avatar or
+  banner, fetched server-side. The upstream URL comes from what yt-dlp reported
+  for that channel and is checked against a fixed host list; there is no way to
+  pass a URL. Responses must be images under 5 MB.
+- `GET /api/youtube/dates?ids=a,b,...` -- upload times (epoch seconds) for up to
+  12 videos, looked up with one `yt-dlp --skip-download` per batch and cached.
+  Ids that can't be resolved are simply absent.
 - `GET /api/youtube/playlist/:id?page=` -- a playlist (`PL...`, `UU...` or
   `OLAK5uy_...` id), same paging: `{ playlist, results, hasMore }`.
 - `GET /api/youtube/subscriptions?channels=UC..,UC..&page=` -- a feed built from
@@ -284,12 +291,18 @@ player says what YouTube did offer.
   handle, verified mark and subscriber count; the player shows the channel's
   icon; Subscribe chips and video cards show icons for channels you've already
   seen (`ytChannelInfo`, max 300). YouTube's flat lists don't carry avatars, so
-  a card only gets an icon once its channel is known.
+  a card only gets an icon once its channel is known. Images are fetched by this
+  server (`/api/youtube/channel-image/:id/(avatar|banner)`), so the browser never
+  contacts Google's image hosts and blockers can't break them; one that still
+  fails to load is simply removed.
 - **Time since upload** ("3 weeks ago") on cards and under the player title.
   Search, playlist and channel lists use yt-dlp's `youtubetab:approximate_date`,
   which is only accurate to the day (so recent uploads read "Today" /
   "Yesterday"); the player uses the exact time. YouTube Mix lists (Related and
-  Home) carry no dates, so their cards show none.
+  Home) and watch history arrive without dates, so the page asks for them in
+  the background (`/api/youtube/dates`, batches of 10, low priority so it never
+  delays playback) and fills them in a few seconds later.
+- **Close** button (top right of the player) stops the video and returns to Home.
 - **SponsorBlock** (opt-in checkbox, off by default) -- skips sponsor / self-promo
   / interaction / intro / outro segments, once per segment so you can seek back.
 - **Watch history page** -- remove single entries, export or import JSON
@@ -304,8 +317,8 @@ removed: in testing, every public instance either disabled the API, put it
 behind a bot check/auth, or returned empty video info to programmatic
 clients, so it can't back a server-side player.
 
-**Privacy note:** channel avatars and banners are loaded by the browser directly
-from `yt3.googleusercontent.com`, like thumbnails from `i.ytimg.com`. Watch history, subscriptions and resume positions live only
+**Privacy note:** video thumbnails are loaded by the browser directly from
+`i.ytimg.com`; channel avatars and banners go through this server instead. Watch history, subscriptions and resume positions live only
 in this browser's `localStorage`; the server is stateless and just receives the
 few video / channel ids it needs to build Home and Subscriptions. SponsorBlock
 is opt-in: when enabled, this server asks `sponsor.ajay.app` using the

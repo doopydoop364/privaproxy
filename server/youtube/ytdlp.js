@@ -88,23 +88,24 @@ function spawnError(e) {
 // ---------- process running (concurrency-capped) ----------
 
 let active = 0;
-const waiting = [];
+const waiting = []; // normal-priority waiters (playback, lists the viewer asked for)
+const waitingLow = []; // background work (upload dates, channel images): only when nothing else waits
 
-function acquire() {
+function acquire(low = false) {
   if (active < cfg().concurrency) {
     active++;
     return Promise.resolve();
   }
-  return new Promise((resolve) => waiting.push(resolve));
+  return new Promise((resolve) => (low ? waitingLow : waiting).push(resolve));
 }
 
 function release() {
-  const next = waiting.shift();
+  const next = waiting.shift() || waitingLow.shift();
   if (next) next(); // hand our slot straight to the next waiter
   else active--;
 }
 
-function runOnce(c, args, timeoutMs) {
+function runOnce(c, args, timeoutMs, tolerant = false) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -151,17 +152,18 @@ function runOnce(c, args, timeoutMs) {
         return finish(reject, new YtdlpError("timeout", `yt-dlp took longer than ${+(timeoutMs / 1000).toFixed(1)}s and was stopped.`));
       if (tooBig)
         return finish(reject, new YtdlpError("failed", "yt-dlp produced unexpectedly large output."));
-      if (code !== 0) return finish(reject, classify(err));
+      // `tolerant`: several inputs, some may fail (yt-dlp exits non-zero but still prints the rest)
+      if (code !== 0 && !(tolerant && out.length)) return finish(reject, classify(err));
       finish(resolve, { stdout: Buffer.concat(out).toString("utf8"), stderr: err });
     });
   });
 }
 
-async function run(args, timeoutMs) {
+async function run(args, timeoutMs, { low = false, tolerant = false } = {}) {
   const c = cfg();
-  await acquire();
+  await acquire(low);
   try {
-    return await runOnce(c, args, timeoutMs ?? c.timeoutMs);
+    return await runOnce(c, args, timeoutMs ?? c.timeoutMs, tolerant);
   } finally {
     release();
   }
@@ -551,10 +553,10 @@ async function related(id, page = 1, size = 20) {
 }
 
 // Shared by channels and playlists: one page of a flat playlist page at `url`.
-async function flatPage(url, p, size) {
+async function flatPage(url, p, size, opts) {
   const c = cfg();
   const [start, end] = pageRange(p, size);
-  const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...FLAT_DATE_ARGS, ...commonArgs(c), "--", url]);
+  const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...FLAT_DATE_ARGS, ...commonArgs(c), "--", url], undefined, opts);
   const data = parseJson(stdout);
   const raw = Array.isArray(data.entries) ? data.entries : [];
   return {
@@ -571,20 +573,94 @@ async function flatPage(url, p, size) {
   };
 }
 
+// ---------- channel images (served through our own route) ----------
+
+const channelImagePath = (id, kind) => `/api/youtube/channel-image/${id}/${kind}`;
+const artCache = new Map(); // channel id -> { avatar, banner } (validated upstream URLs, server-side only)
+function rememberArt(id, art) {
+  artCache.delete(id);
+  artCache.set(id, art);
+  while (artCache.size > 1000) artCache.delete(artCache.keys().next().value);
+}
+
+// The upstream image URL for a channel's avatar or banner, or null. Looked up from what
+// yt-dlp told us about that channel (never from the caller), and re-validated on the way out.
+async function channelImageUrl(id, kind) {
+  if (!CHANNEL_RE.test(id)) throw new YtdlpError("bad_id", "Invalid channel id.");
+  if (kind !== "avatar" && kind !== "banner") return null;
+  if (!artCache.has(id)) await channel(id, 1, 20, { low: true }); // fills artCache
+  const url = (artCache.get(id) || {})[kind];
+  return url && CHANNEL_IMG_RE.test(url) ? url : null;
+}
+
+// ---------- upload dates for videos that only appeared in a list ----------
+
+const dateCache = new Map(); // video id -> Promise<epoch seconds | null>
+const DATE_BATCH = 12;
+
+// { id: epochSeconds } for the ids we could find out. One yt-dlp process per batch, at low
+// priority so it never delays playback; results (including "unknown") are cached.
+async function uploadDates(ids) {
+  const unique = [...new Set(ids)];
+  if (!unique.every((id) => ID_RE.test(id))) throw new YtdlpError("bad_id", "Invalid video id.");
+  if (unique.length > DATE_BATCH) throw new YtdlpError("bad_request", `At most ${DATE_BATCH} ids.`);
+
+  const missing = unique.filter((id) => !dateCache.has(id));
+  if (missing.length) {
+    const c = cfg();
+    const batch = run([
+      "--skip-download", "--no-warnings", "--ignore-errors", "--no-playlist",
+      "--print", "%(id)s|%(timestamp)s|%(upload_date)s",
+      "--extractor-args", "youtube:player_skip=js,configs",
+      ...commonArgs(c),
+      "--", ...missing.map((id) => `https://www.youtube.com/watch?v=${id}`),
+    ], undefined, { low: true, tolerant: true }).catch((err) => {
+      // A batch of only private/removed videos is not an error worth surfacing: they just have no date.
+      if (err instanceof YtdlpError && ["unavailable", "failed"].includes(err.code)) return { stdout: "" };
+      throw err;
+    }).then(({ stdout }) => {
+      const found = new Map();
+      for (const line of stdout.split("\n")) {
+        const [id, ts, ud] = line.trim().split("|");
+        if (!ID_RE.test(id || "")) continue;
+        const t = Number(ts);
+        const m = /^(\d{4})(\d{2})(\d{2})$/.exec(ud || "");
+        found.set(id, Number.isFinite(t) && ts !== "NA" ? t : m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000 : null);
+      }
+      return found;
+    });
+    for (const id of missing) {
+      const p = batch.then((found) => found.get(id) ?? null);
+      dateCache.set(id, p);
+      p.catch(() => dateCache.get(id) === p && dateCache.delete(id)); // never cache failures
+    }
+    while (dateCache.size > 4000) dateCache.delete(dateCache.keys().next().value);
+  }
+  const out = {};
+  await Promise.all(unique.map(async (id) => {
+    const t = await dateCache.get(id);
+    if (Number.isFinite(t)) out[id] = t;
+  }));
+  return out;
+}
+
 // One page of a channel's uploads (newest first): { channel: {id, name}, items, hasMore }.
-async function channel(id, page = 1, size = 20) {
+async function channel(id, page = 1, size = 20, opts) {
   if (!CHANNEL_RE.test(id)) throw new YtdlpError("bad_id", "Invalid channel id.");
   const s = clampSize(size, 20);
   const p = clampPage(page, MAX_PAGES.channel);
   return channelMemo.get(`${id}:${p}:${s}`, async () => {
-    const r = await flatPage(`https://www.youtube.com/channel/${id}/videos`, p, s);
+    const r = await flatPage(`https://www.youtube.com/channel/${id}/videos`, p, s, opts);
     const name = r.title || r.author;
+    rememberArt(id, r.art);
     // Flat channel entries carry no author of their own; fill it in from the channel.
     const items = r.items.map((i) => ({ ...i, author: i.author || name, channelId: i.channelId || id }));
     return {
       channel: {
         id, name,
-        avatar: r.art.avatar, banner: r.art.banner,
+        // Served by our own /channel-image route, so the browser never contacts Google's image hosts.
+        avatar: r.art.avatar ? channelImagePath(id, "avatar") : null,
+        banner: r.art.banner ? channelImagePath(id, "banner") : null,
         followers: r.followers, verified: r.verified, handle: r.handle, description: r.description,
       },
       items,
@@ -618,7 +694,7 @@ async function status() {
 
 module.exports = {
   YtdlpError, ID_RE, CHANNEL_RE, PLAYLIST_RE,
-  search, related, channel, playlist, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
-  _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry,
+  search, related, channel, playlist, channelImageUrl, uploadDates, DATE_BATCH, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
+  _channelImagePath: channelImagePath, _CHANNEL_IMG_RE: CHANNEL_IMG_RE, _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry,
   _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); channelMemo.clear(); playlistMemo.clear(); },
 };

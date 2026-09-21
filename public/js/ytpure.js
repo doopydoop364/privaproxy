@@ -60,9 +60,11 @@
     return plural(Math.max(1, Math.floor(sec / 31557600)), "year"); // 365 days old already counts as 1 year
   }
 
-  // Image URLs we'll put in an <img>: YouTube's own thumbnail and channel-art hosts only.
-  const IMAGE_RE = /^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|yt3\.ggpht\.com)\//;
+  // Image URLs we'll put in an <img>: YouTube's thumbnail host, and our own channel-image route
+  // (which fetches avatars/banners server-side, so the browser never contacts Google for them).
+  const IMAGE_RE = /^(https:\/\/i\.ytimg\.com\/|\/api\/youtube\/channel-image\/UC[A-Za-z0-9_-]{22}\/(avatar|banner)$)/;
   const safeImageUrl = (url) => (IMAGE_RE.test(url || "") ? url : "");
+  const channelImagePath = (id, kind) => (CHANNEL_ID_RE.test(id || "") ? `/api/youtube/channel-image/${id}/${kind}` : "");
 
   // ---------- subtitle appearance ----------
 
@@ -267,7 +269,7 @@
   }
 
   return {
-    fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl,
+    fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl, channelImagePath,
     CAPTION_CHOICES, DEFAULT_CAPTION_STYLE, normalizeCaptionStyle, captionDeclarations, captionCss, cueLine,
     parseYoutubeInput,
     pickAudio, buildQualityList, choosePreferred,

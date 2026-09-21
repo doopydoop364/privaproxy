@@ -132,3 +132,52 @@ test("upload times: flat entries are approximate, video info is precise", () => 
   assert.equal(yt._buildVideo({ ...fixture, upload_date: "20091025" }, "").pub.uploadedAt, Date.UTC(2009, 9, 25) / 1000);
   assert.equal(yt._buildVideo(fixture, "").pub.uploadedAt, null);
 });
+
+test("uploadDates: one batched lookup, tolerant of failures, cached, validated", async () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-ytdlp-"));
+  const log = path.join(dir, "calls.log");
+  const bin = path.join(dir, "yt-dlp");
+  // Fake yt-dlp: logs each call, prints a line per video it "knows" and exits 1 like yt-dlp does
+  // when one of several videos fails.
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");
+const urls = process.argv.filter((a) => a.startsWith("https://www.youtube.com/watch?v="));
+const ids = urls.map((u) => u.split("=")[1]);
+const table = { fakeidAAAAA: "1700000000|20231114", fakeidBBBBB: "NA|20231115" };
+for (const id of ids) if (table[id]) console.log(id + "|" + table[id]);
+process.exit(ids.every((id) => table[id]) ? 0 : 1);
+`);
+  fs.chmodSync(bin, 0o755);
+  const saved = process.env.YTDLP_PATH;
+  process.env.YTDLP_PATH = bin;
+  try {
+    const got = await yt.uploadDates(["fakeidAAAAA", "fakeidBBBBB", "fakeidCCCCC", "fakeidAAAAA"]);
+    assert.deepEqual(got, { fakeidAAAAA: 1700000000, fakeidBBBBB: Date.UTC(2023, 10, 15) / 1000 }); // NA timestamp -> upload date; unknown omitted
+    const calls = () => fs.readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(calls().length, 1, "a single yt-dlp process for the whole batch");
+    assert.match(calls()[0], /--skip-download/);
+    assert.match(calls()[0], /--print %\(id\)s\|%\(timestamp\)s\|%\(upload_date\)s/);
+    // asking again (even mixed with a new id) only looks up what isn't known yet
+    await yt.uploadDates(["fakeidAAAAA", "fakeidBBBBB", "fakeidCCCCC"]);
+    assert.equal(calls().length, 1, "cached, including 'unknown'");
+    await yt.uploadDates(["fakeidAAAAA", "fakeidDDDDD"]);
+    assert.equal(calls().length, 2);
+    assert.equal(calls()[1].includes("fakeidAAAAA"), false, "known ids aren't asked again");
+  } finally {
+    if (saved === undefined) delete process.env.YTDLP_PATH; else process.env.YTDLP_PATH = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  await assert.rejects(yt.uploadDates(["bad"]), (e) => e.code === "bad_id");
+  await assert.rejects(yt.uploadDates(Array.from({ length: yt.DATE_BATCH + 1 }, (_, i) => `abcdefghi${String(i).padStart(2, "0")}`)), (e) => e.code === "bad_request");
+});
+
+test("channel images are served from our own route, never a direct Google URL", () => {
+  assert.equal(yt._channelImagePath("UC4QobU6STFB0P71PMvOGN5A", "avatar"), "/api/youtube/channel-image/UC4QobU6STFB0P71PMvOGN5A/avatar");
+  assert.ok(yt._CHANNEL_IMG_RE.test("https://yt3.googleusercontent.com/abc=s96-c"));
+  for (const bad of ["https://evil.example/x", "http://yt3.googleusercontent.com/x", "https://yt3.googleusercontent.com.evil.example/x", "https://yt3.googleusercontent.com/a/../b", "https://yt3.googleusercontent.com/x?y=1"])
+    assert.equal(yt._CHANNEL_IMG_RE.test(bad), false, bad);
+});

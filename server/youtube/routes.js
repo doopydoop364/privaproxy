@@ -395,6 +395,47 @@ router.get("/subscriptions", async (req, res) => {
   res.json({ results, hasMore: ok.some((r) => r.hasMore) });
 });
 
+// ---- GET /api/youtube/channel-image/:id/:kind (avatar | banner) ----
+// A channel's avatar or banner, fetched by us so the browser never talks to Google's image
+// hosts. The upstream URL is what yt-dlp reported for that channel (validated against a fixed
+// host list), never something the caller supplies.
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+router.get("/channel-image/:id/:kind", async (req, res) => {
+  try {
+    const url = await yt.channelImageUrl(req.params.id, req.params.kind);
+    if (!url) return res.status(404).json({ error: "no_image", message: "That channel has no such image." });
+    let up;
+    try {
+      up = await fetch(url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000), redirect: "error" });
+    } catch {
+      return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't fetch the image." });
+    }
+    const type = up.headers.get("content-type") || "";
+    if (!up.ok || !/^image\/(jpeg|png|webp|gif)$/i.test(type)) {
+      cancelBody(up);
+      return res.status(502).json({ error: "upstream_error", message: "The image server didn't return an image." });
+    }
+    const buf = up.body ? await readCapped(up, MAX_IMAGE_BYTES) : null;
+    if (!buf) return res.status(502).json({ error: "upstream_error", message: "The image was unexpectedly large." });
+    res.set({ "content-type": type, "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }).send(buf);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/dates?ids=a,b,c ----
+// Upload times (epoch seconds) for videos shown in lists that carry none (YouTube Mixes).
+// Best effort: ids we couldn't find out are simply absent from `dates`.
+router.get("/dates", async (req, res) => {
+  const ids = String(req.query.ids || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: "bad_request", message: "Missing ?ids=" });
+  try {
+    res.json({ dates: await yt.uploadDates(ids) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // ---- GET /api/youtube/captions/:id/:lang.vtt ----
 // WebVTT for one of the languages listed in the video's `captions`. The upstream
 // URL is looked up from yt-dlp's output for this video, never taken from the caller.

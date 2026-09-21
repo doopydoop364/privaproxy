@@ -36,6 +36,7 @@
   const metaEl = $("ytMeta");
   const ccStyleBtn = $("ytCaptionStyleBtn");
   const ccPanel = $("ytCaptionPanel");
+  const closeBtn = $("ytClose");
   const titleEl = $("ytTitle");
   const channelEl = $("ytChannel");
   const queueWrap = $("ytQueue");
@@ -44,7 +45,7 @@
 
   // ---------- small helpers ----------
 
-  const { fmtTime, fmtViews, fmtSubscribers, timeAgo, safeImageUrl } = window.YtPure;
+  const { fmtTime, fmtViews, fmtSubscribers, timeAgo, safeImageUrl, channelImagePath } = window.YtPure;
 
   const ICONS = {
     loop: '<path d="M7 7h10v3l4-4-4-4v3H5v6h2zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2z"/>',
@@ -152,6 +153,15 @@
     return m && typeof m === "object" && !Array.isArray(m) ? m : {};
   };
   const channelInfo = (id) => (id ? knownChannels()[id] || null : null);
+  // The URL of a known channel's icon (or ""): always our own route, derived from the id, so
+  // icons saved by older versions (direct Google URLs) keep working without contacting Google.
+  const knownIcon = (id) => {
+    const c = channelInfo(id);
+    return c && c.icon ? channelImagePath(id, "avatar") : "";
+  };
+  // Decoration that may fail to load (blocked, channel has none): remove rather than show a broken image.
+  const dropOnError = (img) => img.addEventListener("error", () => img.remove());
+
   function rememberChannel(meta) {
     if (!meta || !meta.id) return;
     const all = knownChannels();
@@ -261,6 +271,7 @@
           feed.items.push(item);
           feed.grid.appendChild(makeCard(item, feed));
         }
+        if (!feed.section.hidden) wantDates(fresh);
         added = fresh.length;
         feed.page = page;
         feed.done = !data.hasMore;
@@ -329,6 +340,7 @@
     if (name === "related" && feeds.related.stale) startRelated();
     clearHistoryBtn.hidden = !(name === "home" && readHistory().length);
     const feed = feeds[name];
+    wantDates(feed.items); // cards loaded while this list was hidden
     if (observer && feed.fetchPage && !feed.done) {
       observer.unobserve(feed.sentinel); // re-observing reports the current visibility
       observer.observe(feed.sentinel);
@@ -373,7 +385,7 @@
 
   // Keeps every Subscribe button (player + channel page) in step with the saved list.
   function syncSubButtons() {
-    for (const b of document.querySelectorAll(".yt-sub-btn")) {
+    for (const b of document.querySelectorAll(".yt-sub-btn[data-channel]")) { // only real Subscribe buttons
       const on = isSubscribed(b.dataset.channel);
       b.textContent = on ? "Subscribed ✓" : "Subscribe";
       b.classList.toggle("is-on", on);
@@ -402,12 +414,12 @@
       for (const c of subs) {
         const chip = el("span", "yt-chip");
         const open = el("button", "yt-chip-open");
-        const known = channelInfo(c.id);
-        const iconUrl = safeImageUrl(c.icon || (known && known.icon));
+        const iconUrl = c.icon || knownIcon(c.id) ? channelImagePath(c.id, "avatar") : "";
         if (iconUrl) {
           const av = el("img", "yt-avatar-sm");
           av.alt = "";
           av.src = iconUrl;
+          dropOnError(av);
           open.appendChild(av);
         }
         open.appendChild(document.createTextNode(c.name));
@@ -453,6 +465,7 @@
       const img = el("img", "yt-channel-banner");
       img.alt = "";
       img.src = banner;
+      dropOnError(img);
       box.appendChild(img);
     }
     const row = el("div", "yt-channel-header-row");
@@ -461,6 +474,7 @@
       const av = el("img", "yt-avatar yt-avatar-lg");
       av.alt = "";
       av.src = icon;
+      dropOnError(av);
       row.appendChild(av);
     }
     const text = el("div", "yt-channel-header-text");
@@ -511,7 +525,7 @@
           headDone = true;
           const t = data.playlist.title || "Playlist";
           revealTab("playlist", `Playlist: ${t.length > 24 ? t.slice(0, 23) + "…" : t}`);
-          const playAll = el("button", "yt-sub-btn", "Play all");
+          const playAll = el("button", "yt-action-btn", "Play all");
           playAll.type = "button";
           playAll.addEventListener("click", () => {
             const [first, ...rest] = feed.items;
@@ -521,7 +535,7 @@
             renderQueue();
             play(first);
           });
-          const queueAll = el("button", "yt-sub-btn", "Add all to queue");
+          const queueAll = el("button", "yt-action-btn", "Add all to queue");
           queueAll.type = "button";
           queueAll.addEventListener("click", () => feed.items.forEach(addToQueue));
           feed.head.replaceChildren(
@@ -543,7 +557,7 @@
     const feed = feeds.history;
     const hist = readHistory();
     feed.head.replaceChildren();
-    const exportBtn = el("button", "yt-sub-btn", "Export JSON");
+    const exportBtn = el("button", "yt-action-btn", "Export JSON");
     exportBtn.type = "button";
     exportBtn.addEventListener("click", () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(readHistory(), null, 2)], { type: "application/json" }));
@@ -553,7 +567,7 @@
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
-    const importBtn = el("button", "yt-sub-btn", "Import JSON");
+    const importBtn = el("button", "yt-action-btn", "Import JSON");
     importBtn.type = "button";
     const file = el("input");
     file.type = "file";
@@ -617,6 +631,59 @@
     else clearHistoryBtn.hidden = true;
   }
 
+  // ---------- upload times for cards ----------
+  // Search / playlist / channel lists arrive with (day-precision) dates. YouTube Mixes (Related,
+  // Home) and watch history don't, so those are looked up in small background batches; exact
+  // times replace the approximate ones and are remembered for the session.
+
+  const uploadDates = new Map(); // video id -> epoch seconds
+  const datesAsked = new Set();
+  let dateQueue = [];
+  let dateTimer = null;
+  let dateRequests = 0;
+
+  function cardMeta(item) {
+    const known = uploadDates.get(item.id);
+    const when = known !== undefined ? timeAgo(known) : timeAgo(item.uploadedAt, Date.now(), item.uploadedApprox);
+    return [fmtViews(item.views), when].filter(Boolean).join(" • ");
+  }
+
+  function refreshMeta(id) {
+    for (const m of feedsEl.querySelectorAll(`.yt-card-meta[data-id="${id}"]`)) m.textContent = cardMeta(m.itemRef);
+  }
+
+  function wantDates(items) {
+    for (const it of items) {
+      if (it.uploadedAt != null || it.isLive || uploadDates.has(it.id) || datesAsked.has(it.id)) continue;
+      datesAsked.add(it.id);
+      dateQueue.push(it.id);
+    }
+    if (dateQueue.length && !dateTimer) dateTimer = setTimeout(flushDates, 200);
+  }
+
+  function flushDates() {
+    dateTimer = null;
+    while (dateQueue.length && dateRequests < 2) {
+      const batch = dateQueue.splice(0, 10);
+      dateRequests++;
+      api(`/api/youtube/dates?ids=${batch.map(encodeURIComponent).join(",")}`)
+        .then((data) => {
+          for (const [id, ts] of Object.entries((data && data.dates) || {})) {
+            if (!Number.isFinite(ts)) continue;
+            uploadDates.set(id, ts);
+            refreshMeta(id);
+          }
+        })
+        .catch(() => {
+          /* dates are decoration: a failed lookup just leaves the card without one */
+        })
+        .finally(() => {
+          dateRequests--;
+          if (dateQueue.length) flushDates();
+        });
+    }
+  }
+
   function makeCard(item, feed) {
     const card = el("div", "yt-card");
 
@@ -635,18 +702,22 @@
     const body = el("span", "yt-card-body");
     body.appendChild(el("span", "yt-card-title", item.title));
     const chan = el("span", "yt-card-channel");
-    const known = channelInfo(item.channelId);
-    if (known && known.icon) {
+    const iconUrl = knownIcon(item.channelId);
+    if (iconUrl) {
       const av = el("img", "yt-avatar-sm");
       av.alt = "";
       av.loading = "lazy";
-      av.src = safeImageUrl(known.icon);
+      av.src = iconUrl;
+      dropOnError(av);
       chan.appendChild(av);
     }
     chan.appendChild(document.createTextNode(item.author || ""));
     body.appendChild(chan);
-    const meta = [fmtViews(item.views), timeAgo(item.uploadedAt, Date.now(), item.uploadedApprox)].filter(Boolean).join(" • ");
-    if (meta) body.appendChild(el("span", "yt-card-meta", meta));
+    // views + time since upload; the time may arrive later (see wantDates)
+    const meta = el("span", "yt-card-meta", cardMeta(item));
+    meta.dataset.id = item.id;
+    meta.itemRef = item;
+    body.appendChild(meta);
 
     main.append(thumbWrap, body);
     main.addEventListener("click", () => play(item));
@@ -1088,12 +1159,15 @@
     }
   }
 
+  channelIcon.addEventListener("error", () => {
+    channelIcon.hidden = true;
+  });
+
   // The channel's icon: from what we've already seen, else looked up once in the background
   // (the same cached request the channel page uses, so opening the channel afterwards is instant).
   async function showChannelIcon(channelId, token) {
     const apply = () => {
-      const known = channelInfo(channelId);
-      const url = known && safeImageUrl(known.icon);
+      const url = knownIcon(channelId);
       if (!url || token !== playToken) return !!url;
       channelIcon.src = url;
       channelIcon.hidden = false;
@@ -1118,6 +1192,42 @@
       /* the icon is decoration; never block playback on it */
     }
   }
+
+  // ---------- close the player, back to Home ----------
+
+  function closePlayer() {
+    saveResume(true);
+    playToken++; // any lookup still in flight for the video is now stale
+    destroyHls();
+    stopAudio();
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    video.querySelectorAll("track").forEach((t) => t.remove());
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    if (document.pictureInPictureElement && document.exitPictureInPicture) document.exitPictureInPicture().catch(() => {});
+    current.entry = null;
+    current.info = null;
+    current.formatId = null;
+    current.qlist = [];
+    current.option = null;
+    current.segments = [];
+    setMessage("");
+    setBuffering(false);
+    fillQuality([]);
+    fillCaptions([]);
+    renderChannel(null);
+    syncPlayIcon();
+    updateProgress();
+    playerWrap.hidden = true;
+    ccPanel.hidden = true;
+    feeds.related.videoId = null; // the Related list belonged to that video
+    feeds.related.stale = true;
+    feedTabs.querySelector('[data-feed="related"]').hidden = true;
+    showFeed("home");
+    view.scrollTop = 0;
+  }
+  closeBtn.addEventListener("click", closePlayer);
 
   // ---------- captions ----------
 

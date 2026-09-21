@@ -166,12 +166,17 @@ test("fmtSubscribers / fmtCompact", () => {
   assert.equal(P.fmtCompact(999.7e3), "1M");
 });
 
-test("safeImageUrl only allows YouTube image hosts", () => {
+test("safeImageUrl allows only YouTube thumbnails and our own channel-image route", () => {
+  const CH = "UC4QobU6STFB0P71PMvOGN5A";
   assert.equal(P.safeImageUrl("https://i.ytimg.com/vi/x/mqdefault.jpg"), "https://i.ytimg.com/vi/x/mqdefault.jpg");
-  assert.equal(P.safeImageUrl("https://yt3.googleusercontent.com/abc=s96-c"), "https://yt3.googleusercontent.com/abc=s96-c");
-  assert.equal(P.safeImageUrl("https://yt3.ggpht.com/abc"), "https://yt3.ggpht.com/abc");
-  for (const bad of ["http://i.ytimg.com/x", "https://i.ytimg.com.evil.example/x", "https://evil.example/i.ytimg.com/x", "javascript:alert(1)", "data:image/png;base64,AA", "", null, undefined])
+  assert.equal(P.safeImageUrl(`/api/youtube/channel-image/${CH}/avatar`), `/api/youtube/channel-image/${CH}/avatar`);
+  assert.equal(P.safeImageUrl(`/api/youtube/channel-image/${CH}/banner`), `/api/youtube/channel-image/${CH}/banner`);
+  for (const bad of ["https://yt3.googleusercontent.com/abc=s96-c", "http://i.ytimg.com/x", "https://i.ytimg.com.evil.example/x",
+    "https://evil.example/i.ytimg.com/x", "javascript:alert(1)", "data:image/png;base64,AA", "//evil.example/x.png",
+    `/api/youtube/channel-image/${CH}/evil`, `/api/youtube/channel-image/${CH}/avatar?x=1`, "/api/youtube/channel-image/short/avatar", "", null, undefined])
     assert.equal(P.safeImageUrl(bad), "", String(bad));
+  assert.equal(P.channelImagePath(CH, "avatar"), `/api/youtube/channel-image/${CH}/avatar`);
+  assert.equal(P.channelImagePath("nope", "avatar"), "");
 });
 
 test("caption style: defaults, allow-list and CSS", () => {
