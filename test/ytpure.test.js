@@ -125,3 +125,78 @@ test("mergeHistory keeps only well-formed entries and de-duplicates", () => {
   assert.equal(P.mergeHistory(existing, "not an array").length, 1);
   assert.equal(P.mergeHistory(existing, imported, 2).length, 2);
 });
+
+test("timeAgo reads like YouTube", () => {
+  const now = Date.UTC(2026, 8, 21, 12, 0, 0);
+  const ago = (sec, approx) => P.timeAgo(now / 1000 - sec, now, approx);
+  assert.equal(ago(30), "just now");
+  assert.equal(ago(60), "1 minute ago");
+  assert.equal(ago(59 * 60), "59 minutes ago");
+  assert.equal(ago(3600), "1 hour ago");
+  assert.equal(ago(23 * 3600), "23 hours ago");
+  assert.equal(ago(86400), "1 day ago");
+  assert.equal(ago(6 * 86400), "6 days ago");
+  assert.equal(ago(7 * 86400), "1 week ago");
+  assert.equal(ago(21 * 86400), "3 weeks ago");
+  assert.equal(ago(29 * 86400), "4 weeks ago");
+  assert.equal(ago(30 * 86400), "1 month ago", "never \"0 months ago\"");
+  assert.equal(ago(45 * 86400), "1 month ago");
+  assert.equal(ago(364 * 86400), "11 months ago");
+  assert.equal(ago(365 * 86400), "1 year ago");
+  assert.equal(ago(3 * 365.25 * 86400), "3 years ago");
+  assert.equal(ago(-3600), "", "future (scheduled) times show nothing");
+  assert.equal(P.timeAgo(null, now), "");
+  assert.equal(P.timeAgo(NaN, now), "");
+});
+
+test("timeAgo doesn't fake hour precision for day-rounded dates", () => {
+  const now = Date.UTC(2026, 8, 21, 12, 0, 0);
+  const ago = (sec) => P.timeAgo(now / 1000 - sec, now, true);
+  assert.equal(ago(5 * 3600), "Today");
+  assert.equal(ago(30 * 3600), "Yesterday");
+  assert.equal(ago(3 * 86400), "3 days ago");
+  assert.equal(ago(21 * 86400), "3 weeks ago");
+});
+
+test("fmtSubscribers / fmtCompact", () => {
+  assert.equal(P.fmtSubscribers(518000000), "518M subscribers");
+  assert.equal(P.fmtSubscribers(1), "1 subscriber");
+  assert.equal(P.fmtSubscribers(1250), "1.3K subscribers");
+  assert.equal(P.fmtSubscribers(null), "");
+  assert.equal(P.fmtCompact(999.7e3), "1M");
+});
+
+test("safeImageUrl only allows YouTube image hosts", () => {
+  assert.equal(P.safeImageUrl("https://i.ytimg.com/vi/x/mqdefault.jpg"), "https://i.ytimg.com/vi/x/mqdefault.jpg");
+  assert.equal(P.safeImageUrl("https://yt3.googleusercontent.com/abc=s96-c"), "https://yt3.googleusercontent.com/abc=s96-c");
+  assert.equal(P.safeImageUrl("https://yt3.ggpht.com/abc"), "https://yt3.ggpht.com/abc");
+  for (const bad of ["http://i.ytimg.com/x", "https://i.ytimg.com.evil.example/x", "https://evil.example/i.ytimg.com/x", "javascript:alert(1)", "data:image/png;base64,AA", "", null, undefined])
+    assert.equal(P.safeImageUrl(bad), "", String(bad));
+});
+
+test("caption style: defaults, allow-list and CSS", () => {
+  assert.deepEqual(P.normalizeCaptionStyle(null), P.DEFAULT_CAPTION_STYLE);
+  assert.deepEqual(P.normalizeCaptionStyle("junk"), P.DEFAULT_CAPTION_STYLE);
+  const custom = P.normalizeCaptionStyle({ size: 150, color: "yellow", bg: 0, font: "mono", edge: "outline", position: "raised" });
+  assert.deepEqual(custom, { size: 150, color: "yellow", bg: 0, font: "mono", edge: "outline", position: "raised" });
+  const css = P.captionCss(custom, "#v::cue");
+  assert.match(css, /^#v::cue \{ font-size: 150%; color: #ffeb3b; background-color: rgba\(0, 0, 0, 0\); font-family: ui-monospace/);
+  assert.match(css, /text-shadow: -1px -1px 0 #000/);
+  assert.equal(P.captionDeclarations(P.DEFAULT_CAPTION_STYLE).backgroundColor, "rgba(0, 0, 0, 0.75)");
+});
+
+test("caption style: nothing off the allow-list can reach the stylesheet", () => {
+  const evil = { size: "150%; } body { display:none", color: "red; background:url(//evil.example)", bg: 9999, font: "constructor", edge: "__proto__", position: "left" };
+  assert.deepEqual(P.normalizeCaptionStyle(evil), P.DEFAULT_CAPTION_STYLE);
+  const css = P.captionCss(evil);
+  assert.equal(/evil|display:none|url\(/.test(css), false);
+  // prototype keys must not count as valid choices
+  assert.equal(P.normalizeCaptionStyle({ font: "toString" }).font, "sans");
+  assert.equal(P.normalizeCaptionStyle({ color: "hasOwnProperty" }).color, "white");
+});
+
+test("cueLine maps position to a VTT line", () => {
+  assert.equal(P.cueLine("bottom"), "auto");
+  assert.equal(P.cueLine("raised"), -4);
+  assert.equal(P.cueLine("top"), 0);
+});

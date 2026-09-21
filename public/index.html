@@ -85,6 +85,7 @@
             <span id="ytTime" class="yt-time">0:00 / 0:00</span>
             <span class="spacer"></span>
             <select id="ytCaptions" class="yt-select" aria-label="Captions" hidden></select>
+            <button id="ytCaptionStyleBtn" class="yt-btn yt-cc-style" type="button" aria-label="Caption style" title="Caption style" hidden>Aa</button>
             <button id="ytLoop" class="yt-btn" type="button" aria-label="Loop" aria-pressed="false" title="Loop (R)"></button>
             <button id="ytPip" class="yt-btn" type="button" aria-label="Picture in picture" title="Picture in picture (I)"></button>
             <button id="ytTheater" class="yt-btn" type="button" aria-label="Theater mode" aria-pressed="false" title="Theater mode (T)"></button>
@@ -93,10 +94,13 @@
             <button id="ytFullscreen" class="yt-btn" type="button" aria-label="Fullscreen"></button>
           </div>
         </div>
+        <div id="ytCaptionPanel" class="yt-cc-panel" hidden></div>
       </div>
       <div class="yt-now-playing">
         <h2 id="ytTitle"></h2>
+        <p id="ytMeta" class="yt-meta"></p>
         <div class="yt-channel-row">
+          <img id="ytChannelIcon" class="yt-avatar" alt="" hidden />
           <p id="ytChannel" class="yt-channel"></p>
           <button id="ytSubBtn" class="yt-sub-btn" type="button" hidden>Subscribe</button>
         </div>

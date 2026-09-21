@@ -786,6 +786,94 @@ button {
 .yt-hint-inline { font-size: 12px; opacity: 0.8; }
 .yt-btn.is-on { color: var(--accent-yt); }
 
+/* --- channel icons, banners, upload times --- */
+
+.yt-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--panel);
+  flex: none;
+}
+.yt-avatar-lg { width: 72px; height: 72px; }
+.yt-avatar-sm {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: -4px;
+  margin-right: 6px;
+  background: var(--panel);
+}
+.yt-meta { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); }
+.yt-meta:empty { display: none; }
+.yt-channel-header { flex-basis: 100%; }
+.yt-channel-banner {
+  display: block;
+  width: 100%;
+  aspect-ratio: 6 / 1;
+  max-height: 200px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--panel);
+  margin-bottom: 12px;
+}
+.yt-channel-header-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.yt-channel-header-text { flex: 1 1 260px; min-width: 0; }
+.yt-channel-header-text .yt-feed-title { font-size: 22px; }
+.yt-channel-sub { margin: 4px 0 0; font-size: 13px; color: var(--text-dim); }
+.yt-channel-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+}
+.yt-verified {
+  display: inline-block;
+  margin-left: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  color: var(--bg);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 3px;
+}
+
+/* --- caption style panel --- */
+
+.yt-cc-style { font-size: 13px; font-weight: 700; width: auto; padding: 0 8px; }
+.yt-cc-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 64px;
+  width: 260px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(20, 22, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 13px;
+  z-index: 5;
+}
+.yt-cc-title { font-weight: 600; margin-bottom: 8px; }
+.yt-cc-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.yt-cc-preview {
+  margin: 10px 0 8px;
+  padding: 8px;
+  border-radius: 4px;
+  text-align: center;
+  background-color: #556;
+  line-height: 1.3;
+}
+
 /* theater mode: use the full width, and more of the height */
 .yt-player-wrap.is-theater { max-width: none; }
 .yt-player-wrap.is-theater .yt-player { max-height: 82vh; border-radius: 0; }

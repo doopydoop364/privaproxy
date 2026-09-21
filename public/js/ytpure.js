@@ -22,14 +22,107 @@
     return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
   }
 
-  function fmtViews(n) {
+  // 1234 -> "1.2K", 518000000 -> "518M".
+  function fmtCompact(n) {
     if (!Number.isFinite(n)) return "";
-    const short = (x, unit) => `${x.toFixed(x >= 10 ? 0 : 1).replace(/\.0$/, "")}${unit} views`;
+    const short = (x, unit) => `${x.toFixed(x >= 10 ? 0 : 1).replace(/\.0$/, "")}${unit}`;
     // Thresholds sit just under each unit so rounding can't print "1000K".
     if (n >= 999.5e6) return short(n / 1e9, "B");
     if (n >= 999.5e3) return short(n / 1e6, "M");
     if (n >= 1e3) return short(n / 1e3, "K");
-    return `${n} views`;
+    return String(n);
+  }
+
+  function fmtViews(n) {
+    return Number.isFinite(n) ? `${fmtCompact(n)} views` : "";
+  }
+
+  function fmtSubscribers(n) {
+    return Number.isFinite(n) ? `${fmtCompact(n)} ${n === 1 ? "subscriber" : "subscribers"}` : "";
+  }
+
+  // "3 weeks ago", like YouTube. `ts` is epoch seconds. Flat-list dates are only accurate to
+  // the day (`approx`), so anything under 2 days there says "Today"/"Yesterday" rather than
+  // pretending to know the hour. Unknown or future (scheduled) times give "".
+  function timeAgo(ts, nowMs = Date.now(), approx = false) {
+    if (!Number.isFinite(ts)) return "";
+    const sec = nowMs / 1000 - ts;
+    if (sec < 0) return "";
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+    const days = Math.floor(sec / 86400);
+    if (approx && days < 2) return days < 1 ? "Today" : "Yesterday";
+    if (sec < 60) return "just now";
+    if (sec < 3600) return plural(Math.floor(sec / 60), "minute");
+    if (sec < 86400) return plural(Math.floor(sec / 3600), "hour");
+    if (days < 7) return plural(days, "day");
+    if (days < 30) return plural(Math.floor(days / 7), "week");
+    if (days < 365) return plural(Math.max(1, Math.floor(days / 30.44)), "month"); // day 30 is already a month
+    return plural(Math.max(1, Math.floor(sec / 31557600)), "year"); // 365 days old already counts as 1 year
+  }
+
+  // Image URLs we'll put in an <img>: YouTube's own thumbnail and channel-art hosts only.
+  const IMAGE_RE = /^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|yt3\.ggpht\.com)\//;
+  const safeImageUrl = (url) => (IMAGE_RE.test(url || "") ? url : "");
+
+  // ---------- subtitle appearance ----------
+
+  const CAPTION_CHOICES = {
+    size: [50, 75, 100, 125, 150, 200, 300],
+    color: { white: "#ffffff", yellow: "#ffeb3b", green: "#4caf50", cyan: "#00e5ff", pink: "#ff4081", black: "#000000" },
+    bg: [0, 25, 50, 75, 100], // background opacity, percent
+    font: {
+      sans: 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      serif: 'Georgia, "Times New Roman", serif',
+      mono: 'ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace',
+      casual: '"Comic Sans MS", "Comic Neue", cursive',
+    },
+    edge: {
+      none: "none",
+      outline: "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000",
+      shadow: "2px 2px 3px rgba(0, 0, 0, 0.9)",
+    },
+    position: ["bottom", "raised", "top"],
+  };
+  const DEFAULT_CAPTION_STYLE = { size: 100, color: "white", bg: 75, font: "sans", edge: "none", position: "bottom" };
+
+  // Saved settings are untrusted (localStorage): anything not on the allow-list is reset,
+  // so nothing from storage ever reaches a stylesheet unchecked.
+  function normalizeCaptionStyle(x) {
+    const d = DEFAULT_CAPTION_STYLE;
+    const o = x && typeof x === "object" ? x : {};
+    const c = CAPTION_CHOICES;
+    return {
+      size: c.size.includes(o.size) ? o.size : d.size,
+      color: Object.hasOwn(c.color, o.color) ? o.color : d.color,
+      bg: c.bg.includes(o.bg) ? o.bg : d.bg,
+      font: Object.hasOwn(c.font, o.font) ? o.font : d.font,
+      edge: Object.hasOwn(c.edge, o.edge) ? o.edge : d.edge,
+      position: c.position.includes(o.position) ? o.position : d.position,
+    };
+  }
+
+  // The concrete CSS values for a (normalised) style.
+  function captionDeclarations(style) {
+    const st = normalizeCaptionStyle(style);
+    const c = CAPTION_CHOICES;
+    return {
+      fontSize: `${st.size}%`,
+      color: c.color[st.color],
+      backgroundColor: `rgba(0, 0, 0, ${st.bg / 100})`,
+      fontFamily: c.font[st.font],
+      textShadow: c.edge[st.edge],
+    };
+  }
+
+  // A rule for the browser's caption pseudo-element, e.g. captionCss(style, "video::cue").
+  function captionCss(style, selector = "video::cue") {
+    const d = captionDeclarations(style);
+    return `${selector} { font-size: ${d.fontSize}; color: ${d.color}; background-color: ${d.backgroundColor}; font-family: ${d.fontFamily}; text-shadow: ${d.textShadow}; }`;
+  }
+
+  // Where cues sit: VTTCue.line (negative counts up from the bottom, 0 is the top line).
+  function cueLine(position) {
+    return position === "top" ? 0 : position === "raised" ? -4 : "auto";
   }
 
   // ---------- what to type into the search box ----------
@@ -174,7 +267,9 @@
   }
 
   return {
-    fmtTime, fmtViews, parseYoutubeInput,
+    fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl,
+    CAPTION_CHOICES, DEFAULT_CAPTION_STYLE, normalizeCaptionStyle, captionDeclarations, captionCss, cueLine,
+    parseYoutubeInput,
     pickAudio, buildQualityList, choosePreferred,
     driftCorrection, segmentToSkip,
     resumePoint, updateResume, mergeHistory,

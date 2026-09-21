@@ -104,3 +104,31 @@ test("hls playlists are rewritten through tokens and refuse non-http URLs", () =
   assert.equal(hls.lookup("short"), null);
   assert.throws(() => hls.rewritePlaylist("#EXTM3U\nfile:///etc/passwd\n", "https://h.example/x.m3u8", {}), hls.PlaylistError);
 });
+
+test("channel art: avatar resized, banner chosen, foreign hosts dropped", () => {
+  const thumbs = [
+    { id: "0", width: 1060, height: 175, url: "https://yt3.googleusercontent.com/BANNERBASE=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj" },
+    { id: "2", width: 1707, height: 283, url: "https://yt3.googleusercontent.com/BANNERBASE=w1707-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj" },
+    { id: "5", width: 2560, height: 424, url: "https://yt3.googleusercontent.com/BANNERBASE=w2560-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj" },
+    { id: "banner_uncropped", url: "https://yt3.googleusercontent.com/BANNERBASE=s0" },
+    { id: "7", width: 900, height: 900, url: "https://yt3.googleusercontent.com/AVATARBASE=s900-c-k-c0x00ffffff-no-rj" },
+    { id: "avatar_uncropped", url: "https://yt3.googleusercontent.com/AVATARBASE=s0" },
+  ];
+  const art = yt._pickChannelArt(thumbs);
+  assert.equal(art.avatar, "https://yt3.googleusercontent.com/AVATARBASE=s96-c-k-c0x00ffffff-no-rj");
+  assert.match(art.banner, /BANNERBASE=w1707-/);
+  assert.deepEqual(yt._pickChannelArt([{ id: "avatar_uncropped", url: "https://evil.example/x=s0" }]), { avatar: null, banner: null });
+  assert.deepEqual(yt._pickChannelArt([{ id: "avatar_uncropped", url: "https://yt3.googleusercontent.com/x/../y=s0" }]), { avatar: null, banner: null });
+  assert.deepEqual(yt._pickChannelArt(undefined), { avatar: null, banner: null });
+});
+
+test("upload times: flat entries are approximate, video info is precise", () => {
+  const flat = yt._normalizeEntry({ id: "jNQXAC9IVRw", title: "T", timestamp: 1789862400 });
+  assert.deepEqual([flat.uploadedAt, flat.uploadedApprox], [1789862400, true]);
+  const mix = yt._normalizeEntry({ id: "jNQXAC9IVRw", title: "T" });
+  assert.deepEqual([mix.uploadedAt, mix.uploadedApprox], [null, false]);
+  const precise = yt._buildVideo({ ...fixture, timestamp: 1256453853 }, "").pub;
+  assert.deepEqual([precise.uploadedAt, precise.uploadedApprox], [1256453853, false]);
+  assert.equal(yt._buildVideo({ ...fixture, upload_date: "20091025" }, "").pub.uploadedAt, Date.UTC(2009, 9, 25) / 1000);
+  assert.equal(yt._buildVideo(fixture, "").pub.uploadedAt, null);
+});

@@ -32,6 +32,10 @@
   const theaterBtn = $("ytTheater");
   const sponsorBox = $("ytSponsor");
   const subBtn = $("ytSubBtn");
+  const channelIcon = $("ytChannelIcon");
+  const metaEl = $("ytMeta");
+  const ccStyleBtn = $("ytCaptionStyleBtn");
+  const ccPanel = $("ytCaptionPanel");
   const titleEl = $("ytTitle");
   const channelEl = $("ytChannel");
   const queueWrap = $("ytQueue");
@@ -40,7 +44,7 @@
 
   // ---------- small helpers ----------
 
-  const { fmtTime, fmtViews } = window.YtPure;
+  const { fmtTime, fmtViews, fmtSubscribers, timeAgo, safeImageUrl } = window.YtPure;
 
   const ICONS = {
     loop: '<path d="M7 7h10v3l4-4-4-4v3H5v6h2zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2z"/>',
@@ -76,7 +80,7 @@
     },
   };
 
-  const safeThumb = (url) => (/^https:\/\/i\.ytimg\.com\//.test(url || "") ? url : "");
+  const safeThumb = safeImageUrl; // thumbnails and channel art: only YouTube's own image hosts
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -139,6 +143,25 @@
     };
     store.set(HISTORY_KEY, [item, ...readHistory().filter((h) => h.id !== item.id)].slice(0, HISTORY_MAX));
   }
+  // ---------- known channels (name + icon), remembered as you browse ----------
+
+  const CHANNELS_KEY = "ytChannelInfo";
+  const CHANNELS_MAX = 300;
+  const knownChannels = () => {
+    const m = store.get(CHANNELS_KEY, {});
+    return m && typeof m === "object" && !Array.isArray(m) ? m : {};
+  };
+  const channelInfo = (id) => (id ? knownChannels()[id] || null : null);
+  function rememberChannel(meta) {
+    if (!meta || !meta.id) return;
+    const all = knownChannels();
+    const prev = all[meta.id] || {};
+    delete all[meta.id]; // re-insert so the most recently seen channels are kept when trimming
+    all[meta.id] = { name: meta.name || prev.name || "", icon: safeImageUrl(meta.avatar) || prev.icon || "" };
+    for (const k of Object.keys(all).slice(0, Math.max(0, Object.keys(all).length - CHANNELS_MAX))) delete all[k];
+    store.set(CHANNELS_KEY, all);
+  }
+
   const homeSeeds = () => readHistory().slice(0, HOME_SEEDS).map((h) => h.id);
 
   // ---------- infinite feeds: Home / Results / Related ----------
@@ -338,9 +361,10 @@
 
   function toggleSubscription(id, name) {
     const subs = readSubs();
+    const icon = (channelInfo(id) || {}).icon || "";
     const next = subs.some((c) => c.id === id)
       ? subs.filter((c) => c.id !== id)
-      : [{ id, name: name || id }, ...subs].slice(0, SUBS_MAX);
+      : [{ id, name: name || id, icon }, ...subs].slice(0, SUBS_MAX);
     store.set(SUBS_KEY, next);
     feeds.subs.sig = null;
     syncSubButtons();
@@ -377,7 +401,16 @@
       const chips = el("div", "yt-chips");
       for (const c of subs) {
         const chip = el("span", "yt-chip");
-        const open = el("button", "yt-chip-open", c.name);
+        const open = el("button", "yt-chip-open");
+        const known = channelInfo(c.id);
+        const iconUrl = safeImageUrl(c.icon || (known && known.icon));
+        if (iconUrl) {
+          const av = el("img", "yt-avatar-sm");
+          av.alt = "";
+          av.src = iconUrl;
+          open.appendChild(av);
+        }
+        open.appendChild(document.createTextNode(c.name));
         open.type = "button";
         open.addEventListener("click", () => openChannel(c.id, c.name));
         const rm = el("button", "yt-chip-remove", "×");
@@ -412,20 +445,52 @@
     if (label) tab.textContent = label;
   }
 
+  // Banner + avatar + name / handle / subscriber count + Subscribe, like a channel page.
+  function renderChannelHeader(feed, meta) {
+    const box = el("div", "yt-channel-header");
+    const banner = safeImageUrl(meta.banner);
+    if (banner) {
+      const img = el("img", "yt-channel-banner");
+      img.alt = "";
+      img.src = banner;
+      box.appendChild(img);
+    }
+    const row = el("div", "yt-channel-header-row");
+    const icon = safeImageUrl(meta.avatar);
+    if (icon) {
+      const av = el("img", "yt-avatar yt-avatar-lg");
+      av.alt = "";
+      av.src = icon;
+      row.appendChild(av);
+    }
+    const text = el("div", "yt-channel-header-text");
+    const title = el("h3", "yt-feed-title", meta.name || "Channel");
+    if (meta.verified) title.appendChild(el("span", "yt-verified", "✓"));
+    text.appendChild(title);
+    const line = [meta.handle, fmtSubscribers(meta.followers)].filter(Boolean).join(" • ");
+    if (line) text.appendChild(el("p", "yt-channel-sub", line));
+    if (meta.description) text.appendChild(el("p", "yt-channel-desc", meta.description));
+    row.appendChild(text);
+    row.appendChild(makeSubButton(meta.id, meta.name));
+    box.appendChild(row);
+    feed.head.replaceChildren(box);
+    syncSubButtons();
+  }
+
   function openChannel(id, name) {
     const feed = feeds.channel;
     revealTab("channel", name ? `Channel: ${name}` : "Channel");
-    feed.head.replaceChildren(el("h3", "yt-feed-title", name || "Loading channel…"));
+    const known = channelInfo(id);
+    feed.head.replaceChildren(el("h3", "yt-feed-title", name || (known && known.name) || "Loading channel…"));
     let headDone = false;
     resetFeed(feed, {
       fetchPage: async (page) => {
         const data = await api(`/api/youtube/channel/${encodeURIComponent(id)}?page=${page}`);
         if (!headDone && data.channel) {
           headDone = true;
-          const nm = data.channel.name || name || "Channel";
-          revealTab("channel", `Channel: ${nm}`);
-          feed.head.replaceChildren(el("h3", "yt-feed-title", nm), makeSubButton(id, nm));
-          syncSubButtons();
+          rememberChannel(data.channel);
+          revealTab("channel", `Channel: ${data.channel.name || name || "Channel"}`);
+          renderChannelHeader(feed, data.channel);
         }
         return data;
       },
@@ -569,9 +634,19 @@
 
     const body = el("span", "yt-card-body");
     body.appendChild(el("span", "yt-card-title", item.title));
-    body.appendChild(el("span", "yt-card-channel", item.author || ""));
-    const views = fmtViews(item.views);
-    if (views) body.appendChild(el("span", "yt-card-meta", views));
+    const chan = el("span", "yt-card-channel");
+    const known = channelInfo(item.channelId);
+    if (known && known.icon) {
+      const av = el("img", "yt-avatar-sm");
+      av.alt = "";
+      av.loading = "lazy";
+      av.src = safeImageUrl(known.icon);
+      chan.appendChild(av);
+    }
+    chan.appendChild(document.createTextNode(item.author || ""));
+    body.appendChild(chan);
+    const meta = [fmtViews(item.views), timeAgo(item.uploadedAt, Date.now(), item.uploadedApprox)].filter(Boolean).join(" • ");
+    if (meta) body.appendChild(el("span", "yt-card-meta", meta));
 
     main.append(thumbWrap, body);
     main.addEventListener("click", () => play(item));
@@ -685,7 +760,7 @@
     entry.thumbnail = entry.thumbnail || info.thumbnail || "";
     if (entry.duration == null) entry.duration = info.duration;
     titleEl.textContent = entry.title;
-    renderChannel(info);
+    renderChannel(info, token);
     fillCaptions(info.captions || []);
     loadSponsorSegments(entry.id, token);
 
@@ -988,10 +1063,14 @@
 
   // ---------- channel link + subscribe (under the title) ----------
 
-  function renderChannel(info) {
+  function renderChannel(info, token) {
     channelEl.replaceChildren();
     subBtn.hidden = true;
+    channelIcon.hidden = true;
+    channelIcon.removeAttribute("src");
+    metaEl.textContent = "";
     if (!info) return;
+    metaEl.textContent = [fmtViews(info.views), timeAgo(info.uploadedAt, Date.now(), info.uploadedApprox)].filter(Boolean).join(" • ");
     const name = info.author || "";
     if (info.channelId && name) {
       const link = el("button", "yt-link-btn", name);
@@ -1003,8 +1082,40 @@
       subBtn.dataset.channel = info.channelId;
       subBtn.onclick = () => toggleSubscription(info.channelId, name);
       syncSubButtons();
+      showChannelIcon(info.channelId, token);
     } else {
       channelEl.textContent = name;
+    }
+  }
+
+  // The channel's icon: from what we've already seen, else looked up once in the background
+  // (the same cached request the channel page uses, so opening the channel afterwards is instant).
+  async function showChannelIcon(channelId, token) {
+    const apply = () => {
+      const known = channelInfo(channelId);
+      const url = known && safeImageUrl(known.icon);
+      if (!url || token !== playToken) return !!url;
+      channelIcon.src = url;
+      channelIcon.hidden = false;
+      return true;
+    };
+    if (apply()) return;
+    try {
+      const data = await api(`/api/youtube/channel/${encodeURIComponent(channelId)}?page=1`);
+      if (data.channel) {
+        rememberChannel(data.channel);
+        // keep an existing subscription's stored icon in step
+        const subs = readSubs();
+        const sub = subs.find((c) => c.id === channelId);
+        if (sub && !sub.icon) {
+          sub.icon = safeImageUrl(data.channel.avatar);
+          store.set(SUBS_KEY, subs);
+          feeds.subs.sig = null;
+        }
+        apply();
+      }
+    } catch {
+      /* the icon is decoration; never block playback on it */
     }
   }
 
@@ -1015,6 +1126,8 @@
   function fillCaptions(list) {
     captionSel.replaceChildren();
     captionSel.hidden = list.length === 0;
+    ccStyleBtn.hidden = list.length === 0;
+    if (!list.length) ccPanel.hidden = true;
     if (!list.length) return;
     const off = el("option", "", "CC off");
     off.value = "off";
@@ -1042,9 +1155,92 @@
     video.appendChild(track);
     track.addEventListener("load", () => {
       track.track.mode = "showing";
+      applyCueLines();
     });
     track.track.mode = "showing";
   }
+  // ---------- caption appearance (size, colour, background, font, outline, position) ----------
+
+  const CC_STYLE_KEY = "ytCaptionStyle";
+  const { normalizeCaptionStyle, captionCss, captionDeclarations, cueLine, CAPTION_CHOICES } = window.YtPure;
+  let ccStyle = normalizeCaptionStyle(store.get(CC_STYLE_KEY, null));
+  const cueStyleEl = document.createElement("style"); // holds the video::cue rule
+  document.head.appendChild(cueStyleEl);
+  let ccPreview = null;
+
+  // Cue position can't be set from CSS: it's a property of each cue.
+  function applyCueLines() {
+    const line = cueLine(ccStyle.position);
+    for (const track of video.textTracks || []) {
+      for (const cue of track.cues ? Array.from(track.cues) : []) {
+        cue.snapToLines = true;
+        cue.line = line;
+      }
+    }
+  }
+
+  function applyCaptionStyle() {
+    cueStyleEl.textContent = captionCss(ccStyle, "#ytVideo::cue");
+    if (ccPreview) Object.assign(ccPreview.style, captionDeclarations(ccStyle));
+    applyCueLines();
+  }
+
+  function buildCaptionPanel() {
+    ccPanel.replaceChildren(el("div", "yt-cc-title", "Caption style"));
+    const cap = (k) => k.charAt(0).toUpperCase() + k.slice(1);
+    const rows = [
+      ["Size", "size", CAPTION_CHOICES.size.map((v) => [String(v), `${v}%`])],
+      ["Colour", "color", Object.keys(CAPTION_CHOICES.color).map((k) => [k, cap(k)])],
+      ["Background", "bg", CAPTION_CHOICES.bg.map((v) => [String(v), v === 0 ? "None" : `${v}%`])],
+      ["Font", "font", Object.keys(CAPTION_CHOICES.font).map((k) => [k, cap(k)])],
+      ["Outline", "edge", Object.keys(CAPTION_CHOICES.edge).map((k) => [k, cap(k)])],
+      ["Position", "position", CAPTION_CHOICES.position.map((k) => [k, cap(k)])],
+    ];
+    const selects = {};
+    for (const [label, key, options] of rows) {
+      const row = el("label", "yt-cc-row");
+      row.appendChild(el("span", "", label));
+      const sel = el("select", "yt-select");
+      for (const [value, text] of options) {
+        const o = el("option", "", text);
+        o.value = value;
+        sel.appendChild(o);
+      }
+      sel.value = String(ccStyle[key]);
+      sel.addEventListener("change", () => {
+        const raw = key === "size" || key === "bg" ? Number(sel.value) : sel.value;
+        ccStyle = normalizeCaptionStyle({ ...ccStyle, [key]: raw });
+        store.set(CC_STYLE_KEY, ccStyle);
+        applyCaptionStyle();
+      });
+      selects[key] = sel;
+      row.appendChild(sel);
+      ccPanel.appendChild(row);
+    }
+    ccPreview = el("div", "yt-cc-preview", "The quick brown fox jumps over the lazy dog");
+    const reset = el("button", "yt-link-btn", "Reset to default");
+    reset.type = "button";
+    reset.addEventListener("click", () => {
+      ccStyle = normalizeCaptionStyle(null);
+      store.set(CC_STYLE_KEY, ccStyle);
+      for (const [key, sel] of Object.entries(selects)) sel.value = String(ccStyle[key]);
+      applyCaptionStyle();
+    });
+    ccPanel.append(ccPreview, reset);
+  }
+  buildCaptionPanel();
+  applyCaptionStyle();
+
+  ccStyleBtn.addEventListener("click", () => {
+    ccPanel.hidden = !ccPanel.hidden;
+  });
+  document.addEventListener("click", (e) => {
+    if (!ccPanel.hidden && !e.target.closest(".yt-cc-panel, .yt-cc-style")) ccPanel.hidden = true;
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !ccPanel.hidden) ccPanel.hidden = true;
+  });
+
   captionSel.addEventListener("change", () => {
     store.set(CAPTION_KEY, captionSel.value);
     applyCaption();

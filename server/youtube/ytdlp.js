@@ -175,6 +175,10 @@ function parseJson(text) {
   }
 }
 
+// Flat lists carry no upload dates unless asked; this gives day-precision (approximate) ones
+// for search, playlists and channel tabs (YouTube Mixes still have none).
+const FLAT_DATE_ARGS = ["--extractor-args", "youtubetab:approximate_date"];
+
 const commonArgs = (c) => [
   "--socket-timeout", "15",
   ...c.jsRuntimes.flatMap((r) => ["--js-runtimes", r]),
@@ -228,7 +232,29 @@ function normalizeEntry(e) {
     duration: Number.isFinite(e.duration) ? e.duration : null,
     views: Number.isFinite(e.view_count) ? e.view_count : null,
     isLive: e.live_status === "is_live",
+    // Flat-list dates are approximate (rounded to the day); null for YouTube Mixes.
+    uploadedAt: Number.isFinite(e.timestamp) ? e.timestamp : null,
+    uploadedApprox: Number.isFinite(e.timestamp),
     thumbnail: thumbFor(e.id),
+  };
+}
+
+// ---------- channel art ----------
+
+// Only ever hand the browser image URLs on YouTube's own avatar hosts, with a plain path.
+const CHANNEL_IMG_RE = /^https:\/\/(yt3\.googleusercontent\.com|yt3\.ggpht\.com)\/[A-Za-z0-9_-]+(=[A-Za-z0-9_=,.-]*)?$/;
+
+// { avatar, banner } from a channel's `thumbnails`: the avatar re-sized to 96px, and the
+// banner variant closest to 1700px wide. Either may be null.
+function pickChannelArt(thumbnails) {
+  const list = Array.isArray(thumbnails) ? thumbnails.filter((t) => t && CHANNEL_IMG_RE.test(t.url || "")) : [];
+  const avatarSrc = list.find((t) => t.id === "avatar_uncropped") || list.find((t) => t.width && t.width === t.height);
+  const base = avatarSrc && avatarSrc.url.split("=")[0];
+  const banners = list.filter((t) => t.width && t.height && t.width / t.height > 3);
+  banners.sort((a, b) => Math.abs(a.width - 1707) - Math.abs(b.width - 1707));
+  return {
+    avatar: base ? `${base}=s96-c-k-c0x00ffffff-no-rj` : null,
+    banner: banners[0] ? banners[0].url : null,
   };
 }
 
@@ -253,7 +279,7 @@ async function search(query, limit = 20, page = 1) {
   return searchMemo.get(`${p}:${size}:${query}`, async () => {
     const c = cfg();
     const [start, end] = pageRange(p, size);
-    const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c), `ytsearch${end}:${query}`]);
+    const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...FLAT_DATE_ARGS, ...commonArgs(c), `ytsearch${end}:${query}`]);
     const data = parseJson(stdout);
     // Failed lookups can still yield `entries: [null]`; drop anything unusable.
     const raw = Array.isArray(data.entries) ? data.entries : [];
@@ -326,6 +352,14 @@ function pickHlsMaster(formats) {
   return best ? { url: best.url, headers: best.headers } : null;
 }
 
+// Precise upload time (epoch seconds) from full video info; falls back to the upload date.
+function uploadedAtOf(info) {
+  const ts = info.release_timestamp || info.timestamp;
+  if (Number.isFinite(ts)) return ts;
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(info.upload_date || "");
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000 : null;
+}
+
 function buildVideo(info, stderr) {
   const formats = Array.isArray(info.formats) ? info.formats : [];
   const progressive = formats.filter(isProgressive);
@@ -387,6 +421,8 @@ function buildVideo(info, stderr) {
       channelId: CHANNEL_RE.test(info.channel_id || "") ? info.channel_id : null,
       duration: Number.isFinite(info.duration) ? info.duration : null,
       views: Number.isFinite(info.view_count) ? info.view_count : null,
+      uploadedAt: uploadedAtOf(info),
+      uploadedApprox: false,
       description: String(info.description || "").slice(0, 1500),
       isLive: !!info.is_live,
       thumbnail: thumbFor(info.id),
@@ -487,7 +523,7 @@ async function related(id, page = 1, size = 20) {
     let mixError = null;
     try {
       const { stdout } = await run([
-        "--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c),
+        "--flat-playlist", "-J", "-I", `${start}:${end}`, ...FLAT_DATE_ARGS, ...commonArgs(c),
         "--", `https://www.youtube.com/watch?v=${id}&list=RD${id}`,
       ]);
       const data = parseJson(stdout);
@@ -518,13 +554,18 @@ async function related(id, page = 1, size = 20) {
 async function flatPage(url, p, size) {
   const c = cfg();
   const [start, end] = pageRange(p, size);
-  const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c), "--", url]);
+  const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...FLAT_DATE_ARGS, ...commonArgs(c), "--", url]);
   const data = parseJson(stdout);
   const raw = Array.isArray(data.entries) ? data.entries : [];
   return {
     title: String(data.title || "").replace(/ - Videos$/, ""),
     author: String(data.channel || data.uploader || ""),
     channelId: CHANNEL_RE.test(data.channel_id || "") ? data.channel_id : null,
+    followers: Number.isFinite(data.channel_follower_count) ? data.channel_follower_count : null,
+    verified: !!data.channel_is_verified,
+    handle: /^@[A-Za-z0-9._-]{1,60}$/.test(data.uploader_id || "") ? data.uploader_id : "",
+    description: String(data.description || "").slice(0, 300),
+    art: pickChannelArt(data.thumbnails),
     items: raw.map(normalizeEntry).filter(Boolean),
     hasMore: raw.length >= size,
   };
@@ -540,7 +581,15 @@ async function channel(id, page = 1, size = 20) {
     const name = r.title || r.author;
     // Flat channel entries carry no author of their own; fill it in from the channel.
     const items = r.items.map((i) => ({ ...i, author: i.author || name, channelId: i.channelId || id }));
-    return { channel: { id, name }, items, hasMore: r.hasMore && p < MAX_PAGES.channel };
+    return {
+      channel: {
+        id, name,
+        avatar: r.art.avatar, banner: r.art.banner,
+        followers: r.followers, verified: r.verified, handle: r.handle, description: r.description,
+      },
+      items,
+      hasMore: r.hasMore && p < MAX_PAGES.channel,
+    };
   });
 }
 
@@ -570,6 +619,6 @@ async function status() {
 module.exports = {
   YtdlpError, ID_RE, CHANNEL_RE, PLAYLIST_RE,
   search, related, channel, playlist, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
-  _buildVideo: buildVideo,
+  _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry,
   _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); channelMemo.clear(); playlistMemo.clear(); },
 };

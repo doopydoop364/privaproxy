@@ -4,6 +4,7 @@
 // exceptions and wrong wiring (which request is made, which src is set, what gets shown).
 
 function matches(node, sel) {
+  if (sel.includes(",")) return sel.split(",").some((one) => matches(node, one.trim())); // selector lists
   const parts = sel.match(/(\.[\w-]+|\[[^\]]+\]|^[a-z]+)/gi) || [];
   return parts.every((p) => {
     if (p[0] === ".") return node.classList.contains(p.slice(1));
@@ -69,6 +70,8 @@ class El {
     let stopped = false;
     const event = { target: this, preventDefault() {}, stopPropagation() { stopped = true; }, key: "", ...ev };
     for (let n = this; n && !stopped; n = n.parent) for (const f of n.listeners[t] || []) f(event);
+    // the event then reaches document-level listeners, as in a browser
+    if (!stopped && El.documentListeners) for (const f of El.documentListeners[t] || []) f(event);
   }
   click() { this.dispatch("click"); }
   append(...n) { n.forEach((x) => this.appendChild(x)); }
@@ -113,7 +116,7 @@ function makeEnv({ respond, seed = {} }) {
   const root = new El("body");
   const ids = ["view-youtube", "ytSearchForm", "ytSearchInput", "ytBanner", "ytFeedTabs", "ytFeeds", "ytClearHistory", "ytPlayerWrap", "ytPlayer", "ytVideo",
     "ytSpinner", "ytPlayerMsg", "ytSeek", "ytPlayBtn", "ytNextBtn", "ytMuteBtn", "ytVolume", "ytTime", "ytSpeed", "ytQuality", "ytFullscreen", "ytTitle", "ytChannel",
-    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn"];
+    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel"];
   for (const id of ids) {
     const e = new El(id === "ytVideo" ? "video" : id === "ytSearchInput" ? "input" : "div");
     byId.set(id, e);
@@ -131,6 +134,11 @@ function makeEnv({ respond, seed = {} }) {
   byId.get("view-youtube").classList.add("is-active");
   byId.get("ytPlayerWrap").hidden = true;
   byId.get("ytSubBtn").hidden = true;
+  byId.get("ytChannelIcon").hidden = true;
+  byId.get("ytCaptionStyleBtn").classList.add("yt-cc-style"); // classes the page's selectors rely on
+  byId.get("ytCaptionPanel").classList.add("yt-cc-panel");
+  byId.get("ytCaptionStyleBtn").hidden = true;
+  byId.get("ytCaptionPanel").hidden = true;
 
   const store = new Map(Object.entries(seed));
   const requests = [];
@@ -140,6 +148,7 @@ function makeEnv({ respond, seed = {} }) {
     console, URL, Blob, AbortController, Promise, setTimeout, clearTimeout, Date, Math, JSON, Object, Array, Set, Map, Number, String, Error, encodeURIComponent, decodeURIComponent,
     document: {
       getElementById: (id) => byId.get(id) || null,
+      head: new El("head"),
       createElement: (t) => new El(t),
       createTextNode: (t) => Object.assign(new El("#text"), { _text: String(t) }),
       querySelectorAll: (sel) => root.querySelectorAll(sel),
@@ -163,6 +172,7 @@ function makeEnv({ respond, seed = {} }) {
     URLSearchParams,
     Hls: undefined,
   };
+  El.documentListeners = listeners;
   sandbox.window = sandbox;
   sandbox.window.addEventListener = (t, f) => (listeners[t] ||= []).push(f);
   return { sandbox, byId, root, store, requests, audios, listeners, El };

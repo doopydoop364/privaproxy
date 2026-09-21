@@ -184,7 +184,11 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   with no `Range` header gets a normal `200` with the full length, stitched
   together from those windows.
 - `GET /api/youtube/channel/:id?page=` -- a channel's uploads (`UC...` id), 20
-  per page (up to 10 pages): `{ channel, results, hasMore }`.
+  per page (up to 10 pages): `{ channel, results, hasMore }`. `channel` has
+  `name`, `avatar`, `banner`, `followers`, `verified`, `handle` and a short
+  `description`; image URLs are only passed through if they're on YouTube's
+  avatar hosts. Each result also has `uploadedAt` (epoch seconds) and
+  `uploadedApprox`.
 - `GET /api/youtube/playlist/:id?page=` -- a playlist (`PL...`, `UU...` or
   `OLAK5uy_...` id), same paging: `{ playlist, results, hasMore }`.
 - `GET /api/youtube/subscriptions?channels=UC..,UC..&page=` -- a feed built from
@@ -271,7 +275,21 @@ player says what YouTube did offer.
   the player to open its page; Subscribe keeps channel ids in `localStorage`
   (`ytSubs`; the Subscriptions tab mixes your 6 most recently added channels).
 - **Captions** -- a CC menu appears when the video has subtitles or original
-  auto-captions; the choice is remembered.
+  auto-captions; the choice is remembered. The **Aa** button opens a style
+  panel: size (50-300%), colour, background opacity, font, outline and
+  position (bottom / raised / top), with a live preview and a reset. Settings
+  are stored in `localStorage` (`ytCaptionStyle`) and checked against an
+  allow-list on load, so nothing stored can inject CSS.
+- **Channel icons and banners** -- channel pages show the banner, avatar,
+  handle, verified mark and subscriber count; the player shows the channel's
+  icon; Subscribe chips and video cards show icons for channels you've already
+  seen (`ytChannelInfo`, max 300). YouTube's flat lists don't carry avatars, so
+  a card only gets an icon once its channel is known.
+- **Time since upload** ("3 weeks ago") on cards and under the player title.
+  Search, playlist and channel lists use yt-dlp's `youtubetab:approximate_date`,
+  which is only accurate to the day (so recent uploads read "Today" /
+  "Yesterday"); the player uses the exact time. YouTube Mix lists (Related and
+  Home) carry no dates, so their cards show none.
 - **SponsorBlock** (opt-in checkbox, off by default) -- skips sponsor / self-promo
   / interaction / intro / outro segments, once per segment so you can seek back.
 - **Watch history page** -- remove single entries, export or import JSON
@@ -286,7 +304,8 @@ removed: in testing, every public instance either disabled the API, put it
 behind a bot check/auth, or returned empty video info to programmatic
 clients, so it can't back a server-side player.
 
-**Privacy note:** watch history, subscriptions and resume positions live only
+**Privacy note:** channel avatars and banners are loaded by the browser directly
+from `yt3.googleusercontent.com`, like thumbnails from `i.ytimg.com`. Watch history, subscriptions and resume positions live only
 in this browser's `localStorage`; the server is stateless and just receives the
 few video / channel ids it needs to build Home and Subscriptions. SponsorBlock
 is opt-in: when enabled, this server asks `sponsor.ajay.app` using the
