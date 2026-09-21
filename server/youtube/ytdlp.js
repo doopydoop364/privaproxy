@@ -24,6 +24,8 @@ const MAX_STDOUT_BYTES = 30 * 1024 * 1024;
 const VIDEO_TTL_MS = 20 * 60 * 1000; // stream URLs live ~6h; refresh well before
 const SEARCH_TTL_MS = 5 * 60 * 1000;
 const STATUS_TTL_MS = 60 * 1000;
+const RELATED_TTL_MS = 10 * 60 * 1000;
+const MAX_PAGES = { search: 10, related: 10 };
 
 const cfg = () => ({
   bin: process.env.YTDLP_PATH || "yt-dlp",
@@ -188,12 +190,18 @@ function makeMemo(ttlMs, maxEntries) {
       while (map.size > maxEntries) map.delete(map.keys().next().value);
       return promise;
     },
+    // The cached (possibly still-pending) promise for `key`, without starting work.
+    peek(key) {
+      const hit = map.get(key);
+      return hit && Date.now() - hit.at < ttlMs ? hit.promise : undefined;
+    },
     delete: (key) => map.delete(key),
     clear: () => map.clear(),
   };
 }
 
-const searchMemo = makeMemo(SEARCH_TTL_MS, 50);
+const searchMemo = makeMemo(SEARCH_TTL_MS, 100);
+const relatedMemo = makeMemo(RELATED_TTL_MS, 200);
 const videoMemo = makeMemo(VIDEO_TTL_MS, 50);
 const statusMemo = makeMemo(STATUS_TTL_MS, 1);
 
@@ -214,14 +222,32 @@ function normalizeEntry(e) {
   };
 }
 
-async function search(query, limit = 20) {
-  const n = Math.min(30, Math.max(1, Math.floor(Number(limit)) || 20));
-  return searchMemo.get(`${n}:${query}`, async () => {
+const clampSize = (n, fallback) => Math.min(30, Math.max(1, Math.floor(Number(n)) || fallback));
+
+// Non-numeric / <1 pages mean page 1; pages beyond `max` are an error.
+function clampPage(page, max) {
+  const n = Math.floor(Number(page));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  if (n > max) throw new YtdlpError("bad_page", "That page is out of range.");
+  return n;
+}
+
+// yt-dlp's inclusive 1-based item range for a page: page 2 of 20 -> "21:40".
+const pageRange = (page, size) => [(page - 1) * size + 1, page * size];
+
+// One page of search results: { items, hasMore }.
+// (`ytsearchN:` gets N = the last item we want; -I selects just this page.)
+async function search(query, limit = 20, page = 1) {
+  const size = clampSize(limit, 20);
+  const p = clampPage(page, MAX_PAGES.search);
+  return searchMemo.get(`${p}:${size}:${query}`, async () => {
     const c = cfg();
-    const { stdout } = await run(["--flat-playlist", "-J", ...commonArgs(c), `ytsearch${n}:${query}`]);
+    const [start, end] = pageRange(p, size);
+    const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c), `ytsearch${end}:${query}`]);
     const data = parseJson(stdout);
     // Failed lookups can still yield `entries: [null]`; drop anything unusable.
-    return (Array.isArray(data.entries) ? data.entries : []).map(normalizeEntry).filter(Boolean);
+    const raw = Array.isArray(data.entries) ? data.entries : [];
+    return { items: raw.map(normalizeEntry).filter(Boolean), hasMore: raw.length >= size && p < MAX_PAGES.search };
   });
 }
 
@@ -345,6 +371,61 @@ function invalidateVideo(id) {
   videoMemo.delete(id);
 }
 
+async function cachedTitle(id) {
+  const hit = videoMemo.peek(id);
+  if (!hit) return null;
+  try {
+    return (await hit).pub.title;
+  } catch {
+    return null;
+  }
+}
+
+// Videos related to `id`, one page: { items, hasMore }.
+//
+// Source: YouTube's auto-generated "Mix" for the video (list=RD<id>). yt-dlp
+// walks it as an endless generator and stops after the range we request, so
+// paging is just a wider -I window. Item 1 is the seed video itself (dropped).
+// If the Mix is unavailable (or empty), fall back to searching the video's
+// title, which needs the video's info to already be cached (it is, once it plays).
+async function related(id, page = 1, size = 20) {
+  if (!ID_RE.test(id)) throw new YtdlpError("bad_id", "Invalid video id.");
+  const s = clampSize(size, 20);
+  const p = clampPage(page, MAX_PAGES.related);
+  return relatedMemo.get(`${id}:${p}:${s}`, async () => {
+    const c = cfg();
+    const [start, end] = pageRange(p, s);
+    let raw = null;
+    let mixError = null;
+    try {
+      const { stdout } = await run([
+        "--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c),
+        "--", `https://www.youtube.com/watch?v=${id}&list=RD${id}`,
+      ]);
+      const data = parseJson(stdout);
+      raw = Array.isArray(data.entries) ? data.entries : [];
+    } catch (err) {
+      if (!(err instanceof YtdlpError) || !["failed", "unavailable"].includes(err.code)) throw err;
+      mixError = err;
+    }
+
+    const emptyMix = raw !== null && p === 1 && raw.filter((e) => e && e.id !== id).length === 0;
+    if (raw === null || emptyMix) {
+      const title = await cachedTitle(id);
+      if (!title) {
+        if (mixError) throw mixError;
+        return { items: [], hasMore: false };
+      }
+      const r = await search(title, s, p);
+      return { items: r.items.filter((i) => i.id !== id), hasMore: r.hasMore };
+    }
+    return {
+      items: raw.map(normalizeEntry).filter(Boolean).filter((i) => i.id !== id),
+      hasMore: raw.length >= s && p < MAX_PAGES.related,
+    };
+  });
+}
+
 async function status() {
   return statusMemo.get("v", async () => {
     const c = cfg();
@@ -355,6 +436,6 @@ async function status() {
 
 module.exports = {
   YtdlpError, ID_RE,
-  search, getVideo, resolveStream, resolveHls, invalidateVideo, status,
-  _clearCaches: () => { searchMemo.clear(); videoMemo.clear(); statusMemo.clear(); },
+  search, related, getVideo, resolveStream, resolveHls, invalidateVideo, status,
+  _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); },
 };

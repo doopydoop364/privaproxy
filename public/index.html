@@ -105,11 +105,15 @@
       <ol id="ytQueueList"></ol>
     </div>
 
-    <div id="ytResults" class="yt-grid"></div>
-    <div id="ytEmpty" class="yt-empty">
-      <p id="ytEmptyMain">No search yet.</p>
-      <p id="ytEmptySub" class="yt-hint">Videos play through your local yt-dlp, with no ads.</p>
+    <div class="yt-feed-bar">
+      <div id="ytFeedTabs" class="yt-feed-tabs" role="tablist" aria-label="Video lists">
+        <button type="button" class="yt-feed-tab is-active" data-feed="home" role="tab" aria-selected="true">Home</button>
+        <button type="button" class="yt-feed-tab" data-feed="results" role="tab" aria-selected="false" hidden>Results</button>
+        <button type="button" class="yt-feed-tab" data-feed="related" role="tab" aria-selected="false" hidden>Related</button>
+      </div>
+      <button id="ytClearHistory" class="yt-link-btn" type="button" hidden>Clear watch history</button>
     </div>
+    <div id="ytFeeds"></div>
   </section>
 
   <script src="/uv/uv.bundle.js"></script>

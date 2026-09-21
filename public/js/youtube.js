@@ -9,10 +9,9 @@
   const form = $("ytSearchForm");
   const input = $("ytSearchInput");
   const banner = $("ytBanner");
-  const results = $("ytResults");
-  const empty = $("ytEmpty");
-  const emptyMain = $("ytEmptyMain");
-  const emptySub = $("ytEmptySub");
+  const feedTabs = $("ytFeedTabs");
+  const feedsEl = $("ytFeeds");
+  const clearHistoryBtn = $("ytClearHistory");
   const playerWrap = $("ytPlayerWrap");
   const player = $("ytPlayer");
   const video = $("ytVideo");
@@ -125,40 +124,235 @@
     banner.hidden = true;
   };
 
-  function setEmpty(text, { sub = false } = {}) {
-    empty.hidden = !text;
-    emptyMain.textContent = text || "";
-    emptySub.hidden = !sub;
+  // ---------- watch history (stays in this browser; the server keeps none) ----------
+
+  const HISTORY_KEY = "ytHistory";
+  const HISTORY_MAX = 100;
+  const HOME_SEEDS = 4; // how many recent videos the Home feed is built from
+  const HOME_EMPTY_TEXT = "Recommendations appear here once you've watched a few videos. Search for something to get started.";
+
+  function readHistory() {
+    const h = store.get(HISTORY_KEY, []);
+    return Array.isArray(h) ? h.filter((x) => x && typeof x.id === "string") : [];
+  }
+  function recordHistory(entry) {
+    const item = {
+      id: entry.id,
+      title: entry.title,
+      author: entry.author || "",
+      thumbnail: entry.thumbnail || "",
+      duration: entry.duration == null ? null : entry.duration,
+    };
+    store.set(HISTORY_KEY, [item, ...readHistory().filter((h) => h.id !== item.id)].slice(0, HISTORY_MAX));
+  }
+  const homeSeeds = () => readHistory().slice(0, HOME_SEEDS).map((h) => h.id);
+
+  // ---------- infinite feeds: Home / Results / Related ----------
+  // Each feed pages through `fetchPage(n)` -> { results, hasMore } as its sentinel
+  // (an empty div under the grid) scrolls into view.
+
+  const feeds = {};
+  const feedBySentinel = new Map();
+  let activeFeed = "home";
+
+  const observer =
+    typeof IntersectionObserver === "function"
+      ? new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const feed = feedBySentinel.get(entry.target);
+              if (feed) loadMore(feed);
+            }
+          },
+          { root: view, rootMargin: "0px 0px 800px 0px" } // start loading before the end is reached
+        )
+      : null;
+
+  function createFeed(name) {
+    const section = el("section", "yt-feed");
+    section.dataset.feed = name;
+    section.hidden = name !== activeFeed;
+    const grid = el("div", "yt-grid");
+    const status = el("div", "yt-feed-status");
+    const sentinel = el("div", "yt-sentinel");
+    section.append(grid, status, sentinel);
+    feedsEl.appendChild(section);
+
+    const feed = {
+      name, section, grid, status, sentinel,
+      fetchPage: null, exclude: null, emptyText: "",
+      page: 0, loading: false, done: true, seen: new Set(),
+      gen: 0, stale: true, sig: null, videoId: null,
+    };
+    feedBySentinel.set(sentinel, feed);
+    if (observer) observer.observe(sentinel);
+    feeds[name] = feed;
+    return feed;
   }
 
-  // ---------- search + results ----------
+  function setStatus(feed, text, { error = false, button = "" } = {}) {
+    feed.status.replaceChildren();
+    feed.status.classList.toggle("is-error", error);
+    if (text) feed.status.append(document.createTextNode(text));
+    if (button) {
+      const b = el("button", "", button);
+      b.type = "button";
+      b.addEventListener("click", () => loadMore(feed));
+      feed.status.appendChild(b);
+    }
+  }
 
-  let searchSeq = 0;
+  // Start (or restart) a feed from page 1. `autoload: false` waits for the sentinel
+  // to come into view, so a feed nobody is looking at costs nothing.
+  function resetFeed(feed, { fetchPage, exclude = null, emptyText, autoload = true }) {
+    feed.gen++; // any request still in flight for the old contents is now stale
+    feed.fetchPage = fetchPage;
+    feed.exclude = exclude;
+    feed.emptyText = emptyText || "";
+    feed.page = 0;
+    feed.loading = false;
+    feed.done = !fetchPage;
+    feed.stale = false;
+    feed.seen.clear();
+    feed.grid.replaceChildren();
+    setStatus(feed, "");
+    if (!fetchPage) return;
+    if (autoload) loadMore(feed);
+    else if (!observer) setStatus(feed, "", { button: "Load more" });
+  }
 
-  form.addEventListener("submit", async (e) => {
+  async function loadMore(feed) {
+    if (feed.loading || feed.done || !feed.fetchPage) return;
+    feed.loading = true;
+    const gen = feed.gen;
+    try {
+      // A page can be all duplicates / already-watched; try a couple more before giving up.
+      let added = 0;
+      for (let attempt = 0; attempt < 3 && !feed.done && added === 0; attempt++) {
+        setStatus(feed, feed.grid.childElementCount ? "Loading more…" : "Loading…");
+        const page = feed.page + 1;
+        const data = await feed.fetchPage(page);
+        if (gen !== feed.gen) return; // the feed was reset while we waited
+        const fresh = (Array.isArray(data.results) ? data.results : []).filter(
+          (item) => !feed.seen.has(item.id) && !(feed.exclude && feed.exclude(item))
+        );
+        for (const item of fresh) {
+          feed.seen.add(item.id);
+          feed.grid.appendChild(makeCard(item));
+        }
+        added = fresh.length;
+        feed.page = page;
+        feed.done = !data.hasMore;
+      }
+      if (added === 0) feed.done = true; // nothing new after several pages: stop rather than loop
+      if (!feed.grid.childElementCount) setStatus(feed, feed.emptyText);
+      else if (feed.done) setStatus(feed, "That's everything.");
+      else setStatus(feed, "", observer ? {} : { button: "Load more" });
+    } catch (err) {
+      if (gen !== feed.gen) return;
+      setStatus(feed, (err && err.message) || "Couldn't load videos.", { error: true, button: "Retry" });
+      return;
+    } finally {
+      if (gen === feed.gen) feed.loading = false;
+    }
+    // If the sentinel is still on screen the observer won't fire again by itself
+    // (it only reports changes), so re-check to keep filling a tall window.
+    if (observer && !feed.done && !feed.section.hidden) {
+      observer.unobserve(feed.sentinel);
+      observer.observe(feed.sentinel);
+    }
+  }
+
+  function ensureHome() {
+    const feed = feeds.home;
+    const seeds = homeSeeds();
+    const sig = seeds.join(",");
+    if (feed.sig === sig) return; // nothing watched since we last built it
+    feed.sig = sig;
+    if (!seeds.length) {
+      resetFeed(feed, { fetchPage: null });
+      setStatus(feed, HOME_EMPTY_TEXT);
+      return;
+    }
+    const watched = new Set(readHistory().map((h) => h.id));
+    resetFeed(feed, {
+      fetchPage: (page) => api(`/api/youtube/home?seeds=${seeds.map(encodeURIComponent).join(",")}&page=${page}`),
+      exclude: (item) => watched.has(item.id),
+      emptyText: "Nothing to recommend right now.",
+      autoload: false,
+    });
+  }
+
+  function startRelated() {
+    const feed = feeds.related;
+    const id = feed.videoId;
+    if (!id) return;
+    resetFeed(feed, {
+      fetchPage: (page) => api(`/api/youtube/related/${encodeURIComponent(id)}?page=${page}`),
+      exclude: (item) => item.id === id,
+      emptyText: "No related videos found.",
+    });
+  }
+
+  function showFeed(name) {
+    activeFeed = name;
+    for (const tab of feedTabs.querySelectorAll(".yt-feed-tab")) {
+      const on = tab.dataset.feed === name;
+      tab.classList.toggle("is-active", on);
+      tab.setAttribute("aria-selected", String(on));
+    }
+    for (const feed of Object.values(feeds)) feed.section.hidden = feed.name !== name;
+    if (name === "home") ensureHome();
+    if (name === "related" && feeds.related.stale) startRelated();
+    clearHistoryBtn.hidden = !(name === "home" && readHistory().length);
+    const feed = feeds[name];
+    if (observer && feed.fetchPage && !feed.done) {
+      observer.unobserve(feed.sentinel); // re-observing reports the current visibility
+      observer.observe(feed.sentinel);
+    }
+  }
+
+  feedTabs.addEventListener("click", (e) => {
+    const tab = e.target.closest(".yt-feed-tab");
+    if (tab && !tab.hidden) showFeed(tab.dataset.feed);
+  });
+
+  clearHistoryBtn.addEventListener("click", () => {
+    store.set(HISTORY_KEY, []);
+    feeds.home.sig = null;
+    ensureHome();
+    clearHistoryBtn.hidden = true;
+  });
+
+  // ---------- search ----------
+
+  form.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = input.value.trim();
     if (!q) return;
-    const seq = ++searchSeq;
     hideBanner();
-    results.replaceChildren();
-    setEmpty("Searching…");
-    try {
-      const data = await api(`/api/youtube/search?q=${encodeURIComponent(q)}`);
-      if (seq !== searchSeq) return; // a newer search superseded this one
-      renderResults(Array.isArray(data.results) ? data.results : []);
-    } catch (err) {
-      if (seq !== searchSeq) return;
-      setEmpty("");
-      showBanner(err.message);
-    }
+    const tab = feedTabs.querySelector('[data-feed="results"]');
+    tab.hidden = false;
+    tab.title = `Results for “${q}”`;
+    resetFeed(feeds.results, {
+      fetchPage: (page) => api(`/api/youtube/search?q=${encodeURIComponent(q)}&page=${page}`),
+      emptyText: "No results.",
+    });
+    showFeed("results");
   });
 
-  function renderResults(items) {
-    results.replaceChildren();
-    if (!items.length) return setEmpty("No results.");
-    setEmpty("");
-    for (const item of items) results.appendChild(makeCard(item));
+  // Called once a video has actually started loading: remember it, and point
+  // the Related tab at it. From Home/Related we jump to Related (like YouTube's
+  // watch page); from Results we stay put so you can keep browsing the list.
+  function afterPlay(entry) {
+    recordHistory(entry);
+    const related = feeds.related;
+    related.videoId = entry.id;
+    related.stale = true;
+    feedTabs.querySelector('[data-feed="related"]').hidden = false;
+    if (activeFeed !== "results") showFeed("related");
+    else clearHistoryBtn.hidden = true;
   }
 
   function makeCard(item) {
@@ -266,8 +460,10 @@
       // A combined audio+video file is the simplest, most reliable path.
       fillQuality(streams);
       loadStream(choosePreferred(streams).formatId, { autoplay: true, resumeAt: 0 });
+      afterPlay(entry);
     } else if (info.hls) {
       startHls(entry.id);
+      afterPlay(entry);
     } else {
       setBuffering(false);
       setMessage(noStreamMessage(info));
@@ -783,7 +979,8 @@
   setIcon(nextBtn, "next");
   setIcon(fsBtn, "fullscreen");
   syncVolumeUI();
-  setEmpty("No search yet.", { sub: true });
+  for (const name of ["home", "results", "related"]) createFeed(name);
+  showFeed("home");
 
   // Tell the user up front if yt-dlp is missing, instead of on their first search.
   (async () => {

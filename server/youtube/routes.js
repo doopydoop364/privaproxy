@@ -10,6 +10,7 @@ const FORMAT_RE = /^[A-Za-z0-9._-]{1,40}$/;
 
 const STATUS_BY_CODE = {
   bad_id: 400,
+  bad_page: 400,
   unavailable: 404,
   not_installed: 503,
   timeout: 504,
@@ -102,16 +103,60 @@ router.get("/status", async (req, res) => {
   }
 });
 
-// ---- GET /api/youtube/search?q=...&limit=20 ----
+// ---- GET /api/youtube/search?q=...&page=1&limit=20 ----
+// One page of results (limit 1-30 per page, up to 10 pages): { results, hasMore }.
 router.get("/search", async (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   if (!q) return res.status(400).json({ error: "bad_request", message: "Missing ?q=" });
   if (q.length > 200) return res.status(400).json({ error: "bad_request", message: "Query too long." });
   try {
-    res.json({ results: await yt.search(q, req.query.limit) });
+    const r = await yt.search(q, req.query.limit, req.query.page);
+    res.json({ results: r.items, hasMore: r.hasMore });
   } catch (err) {
     sendError(res, err);
   }
+});
+
+// ---- GET /api/youtube/related/:id?page=1 ----
+// Videos related to :id, 20 per page (up to 10 pages): { results, hasMore }.
+router.get("/related/:id", async (req, res) => {
+  try {
+    const r = await yt.related(req.params.id, req.query.page, 20);
+    res.json({ results: r.items, hasMore: r.hasMore });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/home?seeds=id1,id2,...&page=1 ----
+// The "recommended" feed, built from the caller's own watch history (the
+// browser sends its most recent video ids; the server keeps no history).
+// Each seed contributes its related videos; the lists are interleaved
+// round-robin and de-duplicated. Seeds that fail are skipped unless all fail.
+const MAX_SEEDS = 5;
+router.get("/home", async (req, res) => {
+  const seeds = [...new Set(String(req.query.seeds || "").split(",").map((x) => x.trim()).filter(Boolean))];
+  if (!seeds.length) return res.status(400).json({ error: "bad_request", message: "Missing ?seeds=" });
+  if (seeds.length > MAX_SEEDS) return res.status(400).json({ error: "bad_request", message: `At most ${MAX_SEEDS} seeds.` });
+  if (!seeds.every((id) => yt.ID_RE.test(id))) return res.status(400).json({ error: "bad_id", message: "Invalid video id in seeds." });
+
+  const outcomes = await Promise.allSettled(seeds.map((id) => yt.related(id, req.query.page, 8)));
+  const ok = outcomes.filter((o) => o.status === "fulfilled").map((o) => o.value);
+  if (!ok.length) return sendError(res, outcomes[0].reason);
+
+  const seen = new Set(seeds); // never recommend the videos we seeded from
+  const results = [];
+  const longest = Math.max(...ok.map((r) => r.items.length));
+  for (let i = 0; i < longest; i++) {
+    for (const r of ok) {
+      const item = r.items[i];
+      if (item && !seen.has(item.id)) {
+        seen.add(item.id);
+        results.push(item);
+      }
+    }
+  }
+  res.json({ results, hasMore: ok.some((r) => r.hasMore) });
 });
 
 // ---- GET /api/youtube/video/:id ----

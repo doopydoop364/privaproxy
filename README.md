@@ -115,7 +115,14 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
 **Endpoints** (`server/youtube/routes.js`):
 
 - `GET /api/youtube/status` -- yt-dlp version, or `503 not_installed`.
-- `GET /api/youtube/search?q=&limit=` -- `{ results: [...] }` (limit 1-30).
+- `GET /api/youtube/search?q=&page=&limit=` -- one page: `{ results, hasMore }`
+  (limit 1-30 per page, up to 10 pages).
+- `GET /api/youtube/related/:id?page=` -- videos related to `:id`, 20 per page
+  (up to 10 pages): `{ results, hasMore }`.
+- `GET /api/youtube/home?seeds=id1,id2,...&page=` -- the "recommended" feed,
+  built from up to 5 video ids the *browser* sends (its own watch history);
+  the server keeps no history. Related lists for each seed are interleaved
+  and de-duplicated; seeds that fail are skipped unless all fail.
 - `GET /api/youtube/video/:id` -- metadata, playable combined `streams`, and an
   `hls` flag (adaptive playback available). Never exposes YouTube URLs. Includes `available` counts (combined / HLS /
   video-only / audio-only) and any yt-dlp `warnings`, which is how you can
@@ -144,6 +151,13 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   "playlists" that are really HTML error pages are refused. When a video
   has HLS variants from several clients, the master offering the tallest
   video is used.
+- Related videos come from YouTube's auto-generated *Mix* for a video
+  (`watch?v=ID&list=RDID`), which yt-dlp walks as an endless generator; it
+  stops after the `-I start:end` window we ask for, so paging is just a wider
+  window (page *k* re-walks pages 1..k, so pages are cached ~10 min). Item 1
+  of a Mix is the seed itself and is dropped. If a video has no Mix (or an
+  empty one) we fall back to searching its title, which needs the video's info
+  to be cached, as it is once it has played.
 - Video info is cached ~20 min with in-flight de-duplication: a `<video>`
   element fires several range requests at once and they must share one
   yt-dlp run. Processes are capped (default 3) and killed on timeout.
@@ -157,6 +171,23 @@ keyboard shortcuts while the YouTube view is showing: Space/K play, J/L
 +-10s, arrows +-5s / volume, M mute, F fullscreen, 0-9 jump, `<` `>` speed,
 N next, `/` focus search.
 
+**Lists** (Home / Results / Related tabs, all infinite-scrolling): each list
+loads a page whenever its bottom sentinel nears the screen
+(`IntersectionObserver`), ignores responses that arrive after the list was
+reset, de-duplicates, and shows an inline error with Retry on failure. Without
+`IntersectionObserver` it falls back to a "Load more" button.
+
+- **Results** -- your search, paged.
+- **Related** -- appears once a video plays; playing from Home or Related jumps
+  to it (like YouTube's watch page), playing from Results stays put.
+- **Home** -- YouTube's real personalised home feed needs a signed-in account
+  (yt-dlp's `:ytrec` needs login cookies, and Trending no longer exists), so
+  this is *local*: what you watch is recorded in this browser (`localStorage`
+  key `ytHistory`, newest first, max 100), and Home shows related videos for
+  your 4 most recent watches, minus anything you've already watched. It loads
+  lazily (only when the YouTube view is showing). "Clear watch history" wipes
+  it.
+
 Playback picks the simplest path available: a *combined* audio+video file
 if YouTube offers one, otherwise adaptive HLS through hls.js (quality menu
 gets an **Auto** entry plus one entry per resolution; your last choice is
@@ -169,7 +200,9 @@ removed: in testing, every public instance either disabled the API, put it
 behind a bot check/auth, or returned empty video info to programmatic
 clients, so it can't back a server-side player.
 
-**Privacy note:** yt-dlp contacts YouTube from the machine running this
+**Privacy note:** watch history lives only in this browser's `localStorage`;
+the server is stateless and just receives the few video ids it needs to build
+Home. yt-dlp contacts YouTube from the machine running this
 server, using that machine's own IP -- it does not go through the bare
 backends. Result thumbnails are also loaded by the browser directly from
 `i.ytimg.com`.

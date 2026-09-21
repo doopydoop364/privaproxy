@@ -608,6 +608,53 @@ button {
 .yt-mini-btn:hover { border-color: var(--accent-yt); }
 .yt-mini-btn svg { width: 16px; height: 16px; }
 
+/* --- feeds (Home / Results / Related) --- */
+
+.yt-feed-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.yt-feed-tabs {
+  display: flex;
+  gap: 4px;
+}
+.yt-feed-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+}
+.yt-feed-tab:hover { color: var(--text); }
+.yt-feed-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent-yt);
+}
+.yt-feed-status {
+  min-height: 24px;
+  padding: 18px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.yt-feed-status.is-error { color: #ffb4a9; }
+.yt-feed-status button {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.yt-feed-status button:hover { border-color: var(--accent-yt); }
+.yt-sentinel { height: 1px; }
+
 /* --- results grid --- */
 
 .yt-grid {
