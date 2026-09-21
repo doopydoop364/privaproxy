@@ -441,7 +441,7 @@ async function captionText(id, lang) {
   if (!LANG_RE.test(lang)) throw new YtdlpError("bad_request", "Invalid language.");
   const track = (await loadVideo(id)).captions.get(lang);
   if (!track) return null;
-  const up = await fetch(track.url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
+  const up = await fetch(track.url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000), redirect: "error" });
   if (!up.ok) throw new YtdlpError("failed", `YouTube returned ${up.status} for the captions.`);
   const buf = Buffer.from(await up.arrayBuffer());
   if (buf.length > MAX_CAPTION_BYTES) throw new YtdlpError("failed", "Captions were unexpectedly large.");

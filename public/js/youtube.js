@@ -695,7 +695,7 @@
     if (qlist.length) {
       current.qlist = qlist;
       fillQuality(qlist);
-      loadOption(choosePreferred(qlist, store.get("ytHeight", 1080)), { autoplay: true, resumeAt });
+      loadOption(choosePreferred(qlist, store.get(QUALITY_KEY, 1080)), { autoplay: true, resumeAt });
       afterPlay(entry);
     } else if (info.hls) {
       pendingResume = resumeAt;
@@ -726,6 +726,9 @@
     if (current.formatId) qualitySel.value = current.formatId;
   }
 
+  // Not the old "ytHeight" key: that only ever held combined-stream heights (about 360),
+  // which would have kept upgraders on 360p and hidden the higher separate-audio qualities.
+  const QUALITY_KEY = "ytQuality";
   const streamUrl = (id, f) => `/api/youtube/stream/${encodeURIComponent(id)}?f=${encodeURIComponent(f)}`;
 
   function stopAudio() {
@@ -786,7 +789,7 @@
     }
     const opt = current.qlist.find((o) => o.value === qualitySel.value);
     if (!opt) return;
-    store.set("ytHeight", opt.height);
+    store.set(QUALITY_KEY, opt.height);
     loadOption(opt, { autoplay: !video.paused, resumeAt: video.currentTime });
     qualitySel.blur();
   });
@@ -824,6 +827,25 @@
     if (!adaptiveActive || video.paused) return;
     const fix = driftCorrection(video.currentTime, audio.currentTime);
     if (fix !== null) audio.currentTime = fix;
+  });
+  // If the audio stalls while the video keeps going, hold the video until audio catches up
+  // (otherwise the drift grows and the correction above would be audible).
+  let heldForAudio = false;
+  audio.addEventListener("waiting", () => {
+    if (!adaptiveActive || video.paused) return;
+    heldForAudio = true;
+    video.pause();
+    setBuffering(true);
+  });
+  audio.addEventListener("playing", () => {
+    if (!heldForAudio) return;
+    heldForAudio = false;
+    setBuffering(false);
+    const p = video.play();
+    if (p && p.catch) p.catch(() => {});
+  });
+  video.addEventListener("play", () => {
+    heldForAudio = false; // someone (or something) resumed: no longer waiting on audio
   });
   audio.addEventListener("error", () => {
     if (!adaptiveActive) return;
@@ -1132,6 +1154,7 @@
 
   function togglePlay() {
     if (!hasMedia()) return;
+    heldForAudio = false; // an explicit user choice wins over an automatic hold
     if (video.paused) {
       const p = video.play();
       if (p && p.catch) p.catch(() => {});

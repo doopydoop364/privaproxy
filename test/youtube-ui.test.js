@@ -121,6 +121,39 @@ test("playing uses 1080p video-only + separate audio, and falls back on error", 
   assert.match(env.byId.get("ytPlayerMsg").textContent, /Switched to 360p/);
 });
 
+test("an old saved 360p preference doesn't hide the higher qualities", async () => {
+  const env = boot({ ytHeight: "360" }); // the old key only ever held combined-stream heights
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  assert.equal(env.byId.get("ytQuality").value, "a:137");
+  assert.equal(env.byId.get("ytVideo").src, "/api/youtube/stream/aaaaaaaaaaa?f=137");
+  env.byId.get("ytQuality").value = "c:18";
+  env.byId.get("ytQuality").dispatch("change");
+  assert.equal(JSON.parse(env.store.get("ytQuality")), 360, "a chosen quality is remembered under the new key");
+});
+
+test("if the audio stalls the video is held, then resumed when audio plays again", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  const video = env.byId.get("ytVideo");
+  const audio = env.audios[0];
+  video.paused = false;
+  video.dispatch("play");
+  audio.dispatch("waiting");
+  assert.equal(video.paused, true, "video held while audio buffers");
+  const plays = video.plays;
+  audio.dispatch("playing");
+  assert.equal(video.plays, plays + 1, "video resumed once audio is back");
+
+  // if the user takes over during the hold, audio catching up must not act on it a second time
+  video.paused = false;
+  video.dispatch("play");
+  audio.dispatch("waiting"); // video held (paused)
+  env.byId.get("ytPlayBtn").click(); // user presses play
+  const afterClick = video.plays;
+  audio.dispatch("playing");
+  assert.equal(video.plays, afterClick, "no extra resume once the user has acted");
+});
+
 test("channel link, subscribe, and the subscriptions feed", async () => {
   const env = boot();
   await submit(env, `https://www.youtube.com/channel/${CH}`);

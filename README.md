@@ -180,7 +180,9 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   rejects a cached URL (expired) it re-runs yt-dlp once and retries. Works for
   combined audio+video formats and for the video-only / audio-only files
   (`adaptive` in the video info); for those, every upstream request is capped
-  to a 10 MB byte window because YouTube throttles open-ended ones.
+  to a 10 MB byte window because YouTube throttles open-ended ones. A request
+  with no `Range` header gets a normal `200` with the full length, stitched
+  together from those windows.
 - `GET /api/youtube/channel/:id?page=` -- a channel's uploads (`UC...` id), 20
   per page (up to 10 pages): `{ channel, results, hasMore }`.
 - `GET /api/youtube/playlist/:id?page=` -- a playlist (`PL...`, `UU...` or

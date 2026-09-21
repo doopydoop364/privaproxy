@@ -80,6 +80,39 @@ function pipeUpstream(req, res, up, fallbackType) {
     .pipe(res);
 }
 
+// A client that sent no Range wants the whole file, but for adaptive files we only ever ask
+// YouTube for one window at a time. Answer 200 with the full length and stitch the windows
+// together as the body is read. `first` is the (206) response for the first window.
+function pipeWhole(req, res, first, target, ac) {
+  const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(first.headers.get("content-range") || "");
+  if (!m || Number(m[1]) !== 0) return pipeUpstream(req, res, first, target.mime || "video/mp4"); // unexpected shape: pass through
+  const total = Number(m[3]);
+  res.status(200);
+  res.setHeader("content-type", first.headers.get("content-type") || target.mime || "video/mp4");
+  res.setHeader("content-length", String(total));
+  res.setHeader("accept-ranges", "bytes");
+  res.setHeader("cache-control", "private, max-age=0");
+  if (req.method === "HEAD") {
+    cancelBody(first);
+    return res.end();
+  }
+  async function* windows() {
+    yield* Readable.fromWeb(first.body);
+    for (let start = Number(m[2]) + 1; start < total; start += ADAPTIVE_CHUNK) {
+      const end = Math.min(total - 1, start + ADAPTIVE_CHUNK - 1);
+      const up = await fetch(target.url, { headers: { ...target.headers, Range: `bytes=${start}-${end}` }, signal: ac.signal, redirect: "follow" });
+      if (up.status !== 206) {
+        cancelBody(up);
+        throw new Error(`upstream returned ${up.status} mid-stream`);
+      }
+      yield* Readable.fromWeb(up.body);
+    }
+  }
+  Readable.from(windows())
+    .on("error", () => res.destroy())
+    .pipe(res);
+}
+
 // Read an upstream body into memory, refusing anything over `max` bytes.
 async function readCapped(up, max) {
   const chunks = [];
@@ -229,6 +262,7 @@ router.get("/stream/:id", async (req, res) => {
       cancelBody(up);
       return res.status(502).json({ error: "upstream_error", message: `YouTube's video servers returned ${up.status}.` });
     }
+    if (target.adaptive && !req.headers.range && up.status === 206) return pipeWhole(req, res, up, target, ac);
     return pipeUpstream(req, res, up, target.mime || "video/mp4");
   }
 });
