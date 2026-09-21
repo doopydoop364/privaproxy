@@ -63,7 +63,7 @@
         type="text"
         autocomplete="off"
         spellcheck="false"
-        placeholder="Search YouTube  (press / to focus)"
+        placeholder="Search YouTube, or paste a video, channel or playlist link  (press / to focus)"
       />
       <button type="submit">Search</button>
     </form>
@@ -84,6 +84,10 @@
             <input id="ytVolume" class="yt-range yt-volume" type="range" min="0" max="100" value="100" aria-label="Volume" />
             <span id="ytTime" class="yt-time">0:00 / 0:00</span>
             <span class="spacer"></span>
+            <select id="ytCaptions" class="yt-select" aria-label="Captions" hidden></select>
+            <button id="ytLoop" class="yt-btn" type="button" aria-label="Loop" aria-pressed="false" title="Loop (R)"></button>
+            <button id="ytPip" class="yt-btn" type="button" aria-label="Picture in picture" title="Picture in picture (I)"></button>
+            <button id="ytTheater" class="yt-btn" type="button" aria-label="Theater mode" aria-pressed="false" title="Theater mode (T)"></button>
             <select id="ytSpeed" class="yt-select" aria-label="Playback speed"></select>
             <select id="ytQuality" class="yt-select" aria-label="Quality" disabled></select>
             <button id="ytFullscreen" class="yt-btn" type="button" aria-label="Fullscreen"></button>
@@ -92,8 +96,15 @@
       </div>
       <div class="yt-now-playing">
         <h2 id="ytTitle"></h2>
-        <p id="ytChannel" class="yt-channel"></p>
-        <p class="yt-hint">Shortcuts: Space/K play &middot; J/L &plusmn;10s &middot; &larr;/&rarr; &plusmn;5s &middot; &uarr;/&darr; volume &middot; M mute &middot; F fullscreen &middot; 0&ndash;9 jump &middot; &lt; &gt; speed &middot; N next &middot; / search</p>
+        <div class="yt-channel-row">
+          <p id="ytChannel" class="yt-channel"></p>
+          <button id="ytSubBtn" class="yt-sub-btn" type="button" hidden>Subscribe</button>
+        </div>
+        <label class="yt-check">
+          <input id="ytSponsor" type="checkbox" />
+          Skip sponsor segments <span class="yt-hint-inline">(asks SponsorBlock through this server; only a partial hash of the video id is sent)</span>
+        </label>
+        <p class="yt-hint">Shortcuts: Space/K play &middot; J/L &plusmn;10s &middot; &larr;/&rarr; &plusmn;5s &middot; &uarr;/&darr; volume &middot; M mute &middot; F fullscreen &middot; T theater &middot; I picture-in-picture &middot; R loop &middot; 0&ndash;9 jump &middot; &lt; &gt; speed &middot; N next &middot; / search</p>
       </div>
     </div>
 
@@ -110,6 +121,10 @@
         <button type="button" class="yt-feed-tab is-active" data-feed="home" role="tab" aria-selected="true">Home</button>
         <button type="button" class="yt-feed-tab" data-feed="results" role="tab" aria-selected="false" hidden>Results</button>
         <button type="button" class="yt-feed-tab" data-feed="related" role="tab" aria-selected="false" hidden>Related</button>
+        <button type="button" class="yt-feed-tab" data-feed="subs" role="tab" aria-selected="false">Subscriptions</button>
+        <button type="button" class="yt-feed-tab" data-feed="channel" role="tab" aria-selected="false" hidden>Channel</button>
+        <button type="button" class="yt-feed-tab" data-feed="playlist" role="tab" aria-selected="false" hidden>Playlist</button>
+        <button type="button" class="yt-feed-tab" data-feed="history" role="tab" aria-selected="false">History</button>
       </div>
       <button id="ytClearHistory" class="yt-link-btn" type="button" hidden>Clear watch history</button>
     </div>
@@ -121,6 +136,7 @@
   <script src="/scramjet/scramjet.all.js"></script>
   <script type="module" src="/js/app.js"></script>
   <script src="/vendor/hls/hls.min.js"></script>
+  <script src="/js/ytpure.js"></script>
   <script src="/js/youtube.js"></script>
 </body>
 </html>

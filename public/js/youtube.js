@@ -26,6 +26,12 @@
   const speedSel = $("ytSpeed");
   const qualitySel = $("ytQuality");
   const fsBtn = $("ytFullscreen");
+  const captionSel = $("ytCaptions");
+  const loopBtn = $("ytLoop");
+  const pipBtn = $("ytPip");
+  const theaterBtn = $("ytTheater");
+  const sponsorBox = $("ytSponsor");
+  const subBtn = $("ytSubBtn");
   const titleEl = $("ytTitle");
   const channelEl = $("ytChannel");
   const queueWrap = $("ytQueue");
@@ -34,7 +40,12 @@
 
   // ---------- small helpers ----------
 
+  const { fmtTime, fmtViews } = window.YtPure;
+
   const ICONS = {
+    loop: '<path d="M7 7h10v3l4-4-4-4v3H5v6h2zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2z"/>',
+    pip: '<path d="M19 7h-8v6h8zM21 3H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H3V5h18z"/>',
+    theater: '<path d="M19 6H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm0 10H5V8h14z"/>',
     play: '<path d="M8 5v14l11-7z"/>',
     pause: '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>',
     next: '<path d="M6 6l8.5 6L6 18zM16 6h2v12h-2z"/>',
@@ -64,24 +75,6 @@
       }
     },
   };
-
-  function fmtTime(s) {
-    s = Number.isFinite(s) && s > 0 ? Math.floor(s) : 0;
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = String(s % 60).padStart(2, "0");
-    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
-  }
-
-  function fmtViews(n) {
-    if (!Number.isFinite(n)) return "";
-    const short = (x, unit) => `${x.toFixed(x >= 10 ? 0 : 1).replace(/\.0$/, "")}${unit} views`;
-    // Thresholds sit just under each unit so rounding can't print "1000K".
-    if (n >= 999.5e6) return short(n / 1e9, "B");
-    if (n >= 999.5e3) return short(n / 1e6, "M");
-    if (n >= 1e3) return short(n / 1e3, "K");
-    return `${n} views`;
-  }
 
   const safeThumb = (url) => (/^https:\/\/i\.ytimg\.com\//.test(url || "") ? url : "");
 
@@ -174,15 +167,16 @@
     const section = el("section", "yt-feed");
     section.dataset.feed = name;
     section.hidden = name !== activeFeed;
+    const head = el("div", "yt-feed-head"); // per-feed header (channel name, playlist actions...)
     const grid = el("div", "yt-grid");
     const status = el("div", "yt-feed-status");
     const sentinel = el("div", "yt-sentinel");
-    section.append(grid, status, sentinel);
+    section.append(head, grid, status, sentinel);
     feedsEl.appendChild(section);
 
     const feed = {
-      name, section, grid, status, sentinel,
-      fetchPage: null, exclude: null, emptyText: "",
+      name, section, head, grid, status, sentinel,
+      fetchPage: null, exclude: null, emptyText: "", items: [],
       page: 0, loading: false, done: true, seen: new Set(),
       gen: 0, stale: true, sig: null, videoId: null,
     };
@@ -216,6 +210,7 @@
     feed.done = !fetchPage;
     feed.stale = false;
     feed.seen.clear();
+    feed.items = [];
     feed.grid.replaceChildren();
     setStatus(feed, "");
     if (!fetchPage) return;
@@ -240,7 +235,8 @@
         );
         for (const item of fresh) {
           feed.seen.add(item.id);
-          feed.grid.appendChild(makeCard(item));
+          feed.items.push(item);
+          feed.grid.appendChild(makeCard(item, feed));
         }
         added = fresh.length;
         feed.page = page;
@@ -305,6 +301,8 @@
     }
     for (const feed of Object.values(feeds)) feed.section.hidden = feed.name !== name;
     if (name === "home") ensureHome();
+    if (name === "subs") ensureSubs();
+    if (name === "history") ensureHistory();
     if (name === "related" && feeds.related.stale) startRelated();
     clearHistoryBtn.hidden = !(name === "home" && readHistory().length);
     const feed = feeds[name];
@@ -326,6 +324,197 @@
     clearHistoryBtn.hidden = true;
   });
 
+  // ---------- subscriptions (kept in this browser, like watch history) ----------
+
+  const SUBS_KEY = "ytSubs";
+  const SUBS_MAX = 50;
+  const SUBS_PER_FEED = 6; // the server caps how many channels one feed request may use
+
+  function readSubs() {
+    const l = store.get(SUBS_KEY, []);
+    return (Array.isArray(l) ? l : []).filter((x) => x && typeof x.id === "string" && /^UC[A-Za-z0-9_-]{22}$/.test(x.id));
+  }
+  const isSubscribed = (id) => readSubs().some((c) => c.id === id);
+
+  function toggleSubscription(id, name) {
+    const subs = readSubs();
+    const next = subs.some((c) => c.id === id)
+      ? subs.filter((c) => c.id !== id)
+      : [{ id, name: name || id }, ...subs].slice(0, SUBS_MAX);
+    store.set(SUBS_KEY, next);
+    feeds.subs.sig = null;
+    syncSubButtons();
+    if (activeFeed === "subs") ensureSubs();
+  }
+
+  // Keeps every Subscribe button (player + channel page) in step with the saved list.
+  function syncSubButtons() {
+    for (const b of document.querySelectorAll(".yt-sub-btn")) {
+      const on = isSubscribed(b.dataset.channel);
+      b.textContent = on ? "Subscribed ✓" : "Subscribe";
+      b.classList.toggle("is-on", on);
+    }
+  }
+
+  function makeSubButton(id, name) {
+    const b = el("button", "yt-sub-btn");
+    b.type = "button";
+    b.dataset.channel = id;
+    b.addEventListener("click", () => toggleSubscription(id, name));
+    return b;
+  }
+
+  function ensureSubs() {
+    const feed = feeds.subs;
+    const subs = readSubs();
+    const use = subs.slice(0, SUBS_PER_FEED);
+    const sig = subs.map((c) => c.id).join(",");
+    if (feed.sig === sig) return;
+    feed.sig = sig;
+
+    feed.head.replaceChildren();
+    if (subs.length) {
+      const chips = el("div", "yt-chips");
+      for (const c of subs) {
+        const chip = el("span", "yt-chip");
+        const open = el("button", "yt-chip-open", c.name);
+        open.type = "button";
+        open.addEventListener("click", () => openChannel(c.id, c.name));
+        const rm = el("button", "yt-chip-remove", "×");
+        rm.type = "button";
+        rm.title = `Unsubscribe from ${c.name}`;
+        rm.setAttribute("aria-label", `Unsubscribe from ${c.name}`);
+        rm.addEventListener("click", () => toggleSubscription(c.id, c.name));
+        chip.append(open, rm);
+        chips.appendChild(chip);
+      }
+      feed.head.appendChild(chips);
+      if (subs.length > SUBS_PER_FEED)
+        feed.head.appendChild(el("p", "yt-hint", `The feed mixes your ${SUBS_PER_FEED} most recently added channels; open the others from the list above.`));
+    }
+    if (!use.length) {
+      resetFeed(feed, { fetchPage: null });
+      setStatus(feed, "Subscribe to a channel from the player or a channel page and its latest videos will show up here.");
+      return;
+    }
+    resetFeed(feed, {
+      fetchPage: (page) => api(`/api/youtube/subscriptions?channels=${use.map((c) => encodeURIComponent(c.id)).join(",")}&page=${page}`),
+      emptyText: "No videos from your subscriptions right now.",
+      autoload: false,
+    });
+  }
+
+  // ---------- channel + playlist pages ----------
+
+  function revealTab(name, label) {
+    const tab = feedTabs.querySelector(`[data-feed="${name}"]`);
+    tab.hidden = false;
+    if (label) tab.textContent = label;
+  }
+
+  function openChannel(id, name) {
+    const feed = feeds.channel;
+    revealTab("channel", name ? `Channel: ${name}` : "Channel");
+    feed.head.replaceChildren(el("h3", "yt-feed-title", name || "Loading channel…"));
+    let headDone = false;
+    resetFeed(feed, {
+      fetchPage: async (page) => {
+        const data = await api(`/api/youtube/channel/${encodeURIComponent(id)}?page=${page}`);
+        if (!headDone && data.channel) {
+          headDone = true;
+          const nm = data.channel.name || name || "Channel";
+          revealTab("channel", `Channel: ${nm}`);
+          feed.head.replaceChildren(el("h3", "yt-feed-title", nm), makeSubButton(id, nm));
+          syncSubButtons();
+        }
+        return data;
+      },
+      emptyText: "This channel has no videos.",
+    });
+    showFeed("channel");
+  }
+
+  function openPlaylist(id) {
+    const feed = feeds.playlist;
+    revealTab("playlist", "Playlist");
+    feed.head.replaceChildren(el("h3", "yt-feed-title", "Loading playlist…"));
+    let headDone = false;
+    resetFeed(feed, {
+      fetchPage: async (page) => {
+        const data = await api(`/api/youtube/playlist/${encodeURIComponent(id)}?page=${page}`);
+        if (!headDone && data.playlist) {
+          headDone = true;
+          const t = data.playlist.title || "Playlist";
+          revealTab("playlist", `Playlist: ${t.length > 24 ? t.slice(0, 23) + "…" : t}`);
+          const playAll = el("button", "yt-sub-btn", "Play all");
+          playAll.type = "button";
+          playAll.addEventListener("click", () => {
+            const [first, ...rest] = feed.items;
+            if (!first) return;
+            queue.length = 0;
+            for (const it of rest) addToQueue(it);
+            renderQueue();
+            play(first);
+          });
+          const queueAll = el("button", "yt-sub-btn", "Add all to queue");
+          queueAll.type = "button";
+          queueAll.addEventListener("click", () => feed.items.forEach(addToQueue));
+          feed.head.replaceChildren(
+            el("h3", "yt-feed-title", t),
+            el("p", "yt-hint", `${data.playlist.author ? `by ${data.playlist.author} · ` : ""}"Play all" uses the videos loaded so far.`),
+            playAll, queueAll
+          );
+        }
+        return data;
+      },
+      emptyText: "This playlist is empty or unavailable.",
+    });
+    showFeed("playlist");
+  }
+
+  // ---------- watch history page ----------
+
+  function ensureHistory() {
+    const feed = feeds.history;
+    const hist = readHistory();
+    feed.head.replaceChildren();
+    const exportBtn = el("button", "yt-sub-btn", "Export JSON");
+    exportBtn.type = "button";
+    exportBtn.addEventListener("click", () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(readHistory(), null, 2)], { type: "application/json" }));
+      const a = el("a");
+      a.href = url;
+      a.download = "privaproxy-watch-history.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    const importBtn = el("button", "yt-sub-btn", "Import JSON");
+    importBtn.type = "button";
+    const file = el("input");
+    file.type = "file";
+    file.accept = "application/json,.json";
+    file.hidden = true;
+    importBtn.addEventListener("click", () => file.click());
+    file.addEventListener("change", async () => {
+      const f = file.files && file.files[0];
+      file.value = "";
+      if (!f || f.size > 1024 * 1024) return;
+      try {
+        const merged = window.YtPure.mergeHistory(readHistory(), JSON.parse(await f.text()), HISTORY_MAX);
+        store.set(HISTORY_KEY, merged);
+        feeds.home.sig = null;
+        ensureHistory();
+      } catch {
+        setStatus(feed, "That file isn't a valid watch-history export.", { error: true });
+      }
+    });
+    feed.head.append(el("h3", "yt-feed-title", "Watch history"), exportBtn, importBtn, file);
+    resetFeed(feed, {
+      fetchPage: async () => ({ results: hist, hasMore: false }),
+      emptyText: "Nothing watched yet.",
+    });
+  }
+
   // ---------- search ----------
 
   form.addEventListener("submit", (e) => {
@@ -333,6 +522,11 @@
     const q = input.value.trim();
     if (!q) return;
     hideBanner();
+    // A pasted playlist / channel / video link opens that directly instead of searching.
+    const target = window.YtPure.parseYoutubeInput(q);
+    if (target.type === "playlist") return openPlaylist(target.id);
+    if (target.type === "channel") return openChannel(target.id, "");
+    if (target.type === "video") return play({ id: target.id, title: "Loading…", author: "", thumbnail: "", duration: null });
     const tab = feedTabs.querySelector('[data-feed="results"]');
     tab.hidden = false;
     tab.title = `Results for “${q}”`;
@@ -352,11 +546,13 @@
     related.videoId = entry.id;
     related.stale = true;
     feedTabs.querySelector('[data-feed="related"]').hidden = false;
-    if (activeFeed !== "results") showFeed("related");
+    // Playing from Home/Related jumps to Related (like a watch page); from the other
+    // lists we stay put so you can keep browsing them.
+    if (activeFeed === "home" || activeFeed === "related") showFeed("related");
     else clearHistoryBtn.hidden = true;
   }
 
-  function makeCard(item) {
+  function makeCard(item, feed) {
     const card = el("div", "yt-card");
 
     const main = el("button", "yt-card-main");
@@ -391,13 +587,34 @@
     });
 
     card.append(main, add);
+    if (feed && feed.name === "history") {
+      const rm = el("button", "yt-card-queue yt-card-remove", "×");
+      rm.type = "button";
+      rm.title = "Remove from watch history";
+      rm.setAttribute("aria-label", "Remove from watch history");
+      rm.addEventListener("click", () => {
+        store.set(HISTORY_KEY, readHistory().filter((h) => h.id !== item.id));
+        feeds.home.sig = null; // Home must rebuild without this video's seed
+        card.remove();
+        if (!feed.grid.childElementCount) setStatus(feed, feed.emptyText);
+      });
+      card.appendChild(rm);
+    }
     return card;
   }
 
   // ---------- playback ----------
 
   const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-  const current = { entry: null, info: null, formatId: null };
+  const current = { entry: null, info: null, formatId: null, qlist: [], option: null, segments: [], skipped: new Set() };
+  // A video-only file plays in <video>; its matching audio-only file plays in this
+  // element, kept in step with it (see the sync listeners below). Only used for the
+  // "adaptive" qualities; combined files and HLS carry their own audio.
+  const audio = new Audio();
+  audio.preload = "auto";
+  const { buildQualityList, choosePreferred, driftCorrection, segmentToSkip, resumePoint, updateResume } = window.YtPure;
+  const canPlay = (mime, codec) => !!video.canPlayType(`${mime}; codecs="${codec}"`);
+  let adaptiveActive = false;
   let playToken = 0; // guards against out-of-order responses when clicking quickly
   let pendingResume = 0;
   let hls = null; // active hls.js instance (adaptive playback), if any
@@ -421,10 +638,15 @@
   }
 
   async function play(entry) {
+    saveResume(true); // remember where the previous video was before switching away from it
     const token = ++playToken;
     current.entry = entry;
     current.info = null;
     current.formatId = null;
+    current.qlist = [];
+    current.option = null;
+    current.segments = [];
+    current.skipped = new Set();
 
     playerWrap.hidden = false;
     titleEl.textContent = entry.title;
@@ -433,10 +655,14 @@
     setBuffering(true);
     pendingResume = 0;
     destroyHls();
+    stopAudio();
     video.pause();
     video.removeAttribute("src");
     video.load(); // stops any in-flight download from the previous video
+    video.querySelectorAll("track").forEach((t) => t.remove());
     fillQuality([]);
+    fillCaptions([]);
+    renderChannel(null);
     syncPlayIcon();
     updateProgress();
     if (playerWrap.scrollIntoView) playerWrap.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -453,16 +679,26 @@
     if (token !== playToken) return;
 
     current.info = info;
-    titleEl.textContent = info.title || entry.title;
-    channelEl.textContent = info.author || entry.author || "";
+    // Playing from a pasted link starts with a placeholder entry; fill it in.
+    entry.title = info.title || entry.title;
+    entry.author = info.author || entry.author || "";
+    entry.thumbnail = entry.thumbnail || info.thumbnail || "";
+    if (entry.duration == null) entry.duration = info.duration;
+    titleEl.textContent = entry.title;
+    renderChannel(info);
+    fillCaptions(info.captions || []);
+    loadSponsorSegments(entry.id, token);
 
-    const streams = Array.isArray(info.streams) ? info.streams : [];
-    if (streams.length) {
-      // A combined audio+video file is the simplest, most reliable path.
-      fillQuality(streams);
-      loadStream(choosePreferred(streams).formatId, { autoplay: true, resumeAt: 0 });
+    const resumeAt = resumePoint(store.get(RESUME_KEY, {}), entry.id, info.duration);
+    // Combined files (audio+video in one) and separate video/audio files, best first.
+    const qlist = buildQualityList(info, canPlay);
+    if (qlist.length) {
+      current.qlist = qlist;
+      fillQuality(qlist);
+      loadOption(choosePreferred(qlist, store.get("ytHeight", 1080)), { autoplay: true, resumeAt });
       afterPlay(entry);
     } else if (info.hls) {
+      pendingResume = resumeAt;
       startHls(entry.id);
       afterPlay(entry);
     } else {
@@ -479,34 +715,60 @@
     return msg;
   }
 
-  // streams arrive best-first; honor the user's last chosen height as a ceiling
-  function choosePreferred(streams) {
-    const want = store.get("ytHeight", Infinity);
-    return streams.find((s) => s.height <= want) || streams[streams.length - 1];
-  }
-
-  function fillQuality(streams) {
+  function fillQuality(list) {
     qualitySel.replaceChildren();
-    for (const s of streams) {
-      const opt = el("option", "", s.ext && s.ext !== "mp4" ? `${s.label} (${s.ext})` : s.label);
-      opt.value = s.formatId;
+    for (const o of list) {
+      const opt = el("option", "", o.label);
+      opt.value = o.value;
       qualitySel.appendChild(opt);
     }
-    qualitySel.disabled = streams.length < 2;
+    qualitySel.disabled = list.length < 2;
     if (current.formatId) qualitySel.value = current.formatId;
   }
 
-  function loadStream(formatId, { autoplay = true, resumeAt = 0 } = {}) {
-    current.formatId = formatId;
-    qualitySel.value = formatId;
+  const streamUrl = (id, f) => `/api/youtube/stream/${encodeURIComponent(id)}?f=${encodeURIComponent(f)}`;
+
+  function stopAudio() {
+    adaptiveActive = false;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+  }
+
+  // Loads one entry of the quality list: a single combined file, or a video-only
+  // file plus its audio-only partner.
+  function loadOption(opt, { autoplay = true, resumeAt = 0 } = {}) {
+    current.option = opt;
+    current.formatId = opt.value;
+    qualitySel.value = opt.value;
     pendingResume = resumeAt;
     setMessage("");
     setBuffering(true);
-    video.src = `/api/youtube/stream/${encodeURIComponent(current.entry.id)}?f=${encodeURIComponent(formatId)}`;
+    stopAudio();
+    const id = current.entry.id;
+    video.src = streamUrl(id, opt.videoId);
+    if (opt.kind === "adaptive") {
+      adaptiveActive = true;
+      audio.src = streamUrl(id, opt.audioId);
+      audio.volume = video.volume;
+      audio.muted = video.muted;
+      audio.playbackRate = video.playbackRate;
+    }
     if (autoplay) {
       const p = video.play();
       if (p && p.catch) p.catch(() => {}); // autoplay policy may refuse; the controls still work
     }
+  }
+
+  // If a separate-video/audio quality fails, drop to the best single-file quality.
+  function fallBackFromAdaptive(reason) {
+    const combined = current.qlist.find((o) => o.kind === "combined");
+    if (!combined) return false;
+    loadOption(combined, { autoplay: !video.paused, resumeAt: video.currentTime });
+    const msg = `${reason} Switched to ${combined.label}.`;
+    setMessage(msg);
+    setTimeout(() => playerMsg.textContent === msg && setMessage(""), 5000);
+    return true;
   }
 
   qualitySel.addEventListener("change", () => {
@@ -522,11 +784,53 @@
       qualitySel.blur();
       return;
     }
-    const stream = current.info && current.info.streams.find((s) => s.formatId === qualitySel.value);
-    if (!stream) return;
-    store.set("ytHeight", stream.height);
-    loadStream(stream.formatId, { autoplay: !video.paused, resumeAt: video.currentTime });
+    const opt = current.qlist.find((o) => o.value === qualitySel.value);
+    if (!opt) return;
+    store.set("ytHeight", opt.height);
+    loadOption(opt, { autoplay: !video.paused, resumeAt: video.currentTime });
     qualitySel.blur();
+  });
+
+  // ---------- separate audio kept in step with the video ----------
+
+  const audioPlay = () => {
+    const p = audio.play();
+    if (p && p.catch) p.catch(() => {});
+  };
+  video.addEventListener("play", () => {
+    if (!adaptiveActive) return;
+    audio.currentTime = video.currentTime;
+    audioPlay();
+  });
+  video.addEventListener("pause", () => adaptiveActive && audio.pause());
+  video.addEventListener("waiting", () => adaptiveActive && audio.pause());
+  video.addEventListener("playing", () => {
+    if (!adaptiveActive) return;
+    audio.currentTime = video.currentTime;
+    audioPlay();
+  });
+  video.addEventListener("seeking", () => {
+    if (adaptiveActive) audio.currentTime = video.currentTime;
+  });
+  video.addEventListener("ratechange", () => {
+    audio.playbackRate = video.playbackRate;
+  });
+  video.addEventListener("volumechange", () => {
+    audio.volume = video.volume;
+    audio.muted = video.muted;
+  });
+  video.addEventListener("ended", () => adaptiveActive && audio.pause());
+  video.addEventListener("timeupdate", () => {
+    if (!adaptiveActive || video.paused) return;
+    const fix = driftCorrection(video.currentTime, audio.currentTime);
+    if (fix !== null) audio.currentTime = fix;
+  });
+  audio.addEventListener("error", () => {
+    if (!adaptiveActive) return;
+    if (!fallBackFromAdaptive("The audio for that quality couldn't be played.")) {
+      setBuffering(false);
+      setMessage("The audio for this quality couldn't be played. Try another quality.");
+    }
   });
 
   // ---------- adaptive playback (HLS via hls.js) ----------
@@ -664,6 +968,7 @@
   });
   video.addEventListener("error", () => {
     if (!hasMedia() || hls) return; // fired by us clearing the source, or hls.js owns error handling
+    if (adaptiveActive && fallBackFromAdaptive("That quality couldn't be played.")) return;
     setBuffering(false);
     const code = video.error && video.error.code;
     setMessage(
@@ -674,6 +979,148 @@
         : "This stream couldn't be played (unsupported format or YouTube refused it). Try another quality."
     );
   });
+
+  // ---------- channel link + subscribe (under the title) ----------
+
+  function renderChannel(info) {
+    channelEl.replaceChildren();
+    subBtn.hidden = true;
+    if (!info) return;
+    const name = info.author || "";
+    if (info.channelId && name) {
+      const link = el("button", "yt-link-btn", name);
+      link.type = "button";
+      link.title = "Open this channel";
+      link.addEventListener("click", () => openChannel(info.channelId, name));
+      channelEl.appendChild(link);
+      subBtn.hidden = false;
+      subBtn.dataset.channel = info.channelId;
+      subBtn.onclick = () => toggleSubscription(info.channelId, name);
+      syncSubButtons();
+    } else {
+      channelEl.textContent = name;
+    }
+  }
+
+  // ---------- captions ----------
+
+  const CAPTION_KEY = "ytCaptionLang";
+
+  function fillCaptions(list) {
+    captionSel.replaceChildren();
+    captionSel.hidden = list.length === 0;
+    if (!list.length) return;
+    const off = el("option", "", "CC off");
+    off.value = "off";
+    captionSel.appendChild(off);
+    for (const c of list) {
+      const o = el("option", "", c.auto ? `${c.name} (auto)` : c.name);
+      o.value = c.lang;
+      captionSel.appendChild(o);
+    }
+    const want = store.get(CAPTION_KEY, "off");
+    captionSel.value = list.some((c) => c.lang === want) ? want : "off";
+    applyCaption();
+  }
+
+  function applyCaption() {
+    video.querySelectorAll("track").forEach((t) => t.remove());
+    const lang = captionSel.value;
+    if (!current.entry || !lang || lang === "off") return;
+    const track = el("track");
+    track.kind = "subtitles";
+    track.label = captionSel.selectedOptions[0].textContent;
+    track.srclang = lang.slice(0, 20);
+    track.src = `/api/youtube/captions/${encodeURIComponent(current.entry.id)}/${encodeURIComponent(lang)}.vtt`;
+    track.default = true;
+    video.appendChild(track);
+    track.addEventListener("load", () => {
+      track.track.mode = "showing";
+    });
+    track.track.mode = "showing";
+  }
+  captionSel.addEventListener("change", () => {
+    store.set(CAPTION_KEY, captionSel.value);
+    applyCaption();
+    captionSel.blur();
+  });
+
+  // ---------- SponsorBlock (opt-in: the server looks segments up on our behalf) ----------
+
+  const SPONSOR_KEY = "ytSponsor";
+  sponsorBox.checked = !!store.get(SPONSOR_KEY, false);
+
+  async function loadSponsorSegments(id, token) {
+    current.segments = [];
+    if (!sponsorBox.checked) return;
+    try {
+      const data = await api(`/api/youtube/sponsorblock/${encodeURIComponent(id)}`);
+      if (token === playToken && Array.isArray(data.segments)) current.segments = data.segments;
+    } catch {
+      /* SponsorBlock is optional; playback never depends on it */
+    }
+  }
+  sponsorBox.addEventListener("change", () => {
+    store.set(SPONSOR_KEY, sponsorBox.checked);
+    if (current.entry) loadSponsorSegments(current.entry.id, playToken);
+    else current.segments = [];
+  });
+  video.addEventListener("timeupdate", () => {
+    if (!sponsorBox.checked || !current.segments.length) return;
+    const seg = segmentToSkip(current.segments, video.currentTime, current.skipped);
+    if (!seg) return;
+    current.skipped.add(`${seg.start}-${seg.end}`); // once per segment, so seeking back is respected
+    video.currentTime = seg.end;
+    const msg = `Skipped ${seg.category}`;
+    setMessage(msg);
+    setTimeout(() => playerMsg.textContent === msg && setMessage(""), 2000);
+  });
+
+  // ---------- resume where you left off ----------
+
+  const RESUME_KEY = "ytResume";
+  let lastResumeSave = 0;
+  function saveResume(force) {
+    if (!current.entry || !hasMedia()) return;
+    const now = Date.now();
+    if (!force && now - lastResumeSave < 5000) return;
+    lastResumeSave = now;
+    const d = Number.isFinite(video.duration) ? video.duration : (current.info && current.info.duration) || 0;
+    store.set(RESUME_KEY, updateResume(store.get(RESUME_KEY, {}), current.entry.id, video.currentTime, d));
+  }
+  video.addEventListener("timeupdate", () => saveResume(false));
+  video.addEventListener("pause", () => saveResume(true));
+  video.addEventListener("ended", () => {
+    if (current.entry) store.set(RESUME_KEY, updateResume(store.get(RESUME_KEY, {}), current.entry.id, 0, 0));
+  });
+  window.addEventListener("pagehide", () => saveResume(true));
+
+  // ---------- loop, picture-in-picture, theater mode ----------
+
+  function setLoop(on) {
+    video.loop = on;
+    loopBtn.classList.toggle("is-on", on);
+    loopBtn.setAttribute("aria-pressed", String(on));
+  }
+  loopBtn.addEventListener("click", () => setLoop(!video.loop));
+
+  const pipSupported = !!document.pictureInPictureEnabled && typeof video.requestPictureInPicture === "function";
+  pipBtn.hidden = !pipSupported;
+  function togglePip() {
+    if (!pipSupported || !hasMedia()) return;
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else video.requestPictureInPicture().catch(() => {});
+  }
+  pipBtn.addEventListener("click", togglePip);
+
+  const THEATER_KEY = "ytTheater";
+  function setTheater(on) {
+    playerWrap.classList.toggle("is-theater", on);
+    theaterBtn.classList.toggle("is-on", on);
+    theaterBtn.setAttribute("aria-pressed", String(on));
+    store.set(THEATER_KEY, on);
+  }
+  theaterBtn.addEventListener("click", () => setTheater(!playerWrap.classList.contains("is-theater")));
 
   // ---------- controls ----------
 
@@ -784,6 +1231,7 @@
     video.defaultPlaybackRate = rate;
     video.playbackRate = rate;
     speedSel.value = String(rate);
+    store.set("ytSpeed", rate);
   }
   speedSel.addEventListener("change", () => {
     setSpeed(Number(speedSel.value));
@@ -950,6 +1398,18 @@
       case "F":
         toggleFullscreen();
         break;
+      case "t":
+      case "T":
+        theaterBtn.click();
+        break;
+      case "i":
+      case "I":
+        togglePip();
+        break;
+      case "r":
+      case "R":
+        setLoop(!video.loop);
+        break;
       case "<":
         stepSpeed(-1);
         break;
@@ -979,8 +1439,15 @@
   setIcon(playBtn, "play");
   setIcon(nextBtn, "next");
   setIcon(fsBtn, "fullscreen");
+  setIcon(loopBtn, "loop");
+  setIcon(pipBtn, "pip");
+  setIcon(theaterBtn, "theater");
+  setTheater(!!store.get(THEATER_KEY, false));
+  const savedSpeed = Number(store.get("ytSpeed", 1));
+  if (SPEEDS.includes(savedSpeed)) setSpeed(savedSpeed);
   syncVolumeUI();
-  for (const name of ["home", "results", "related"]) createFeed(name);
+  for (const name of ["home", "results", "related", "subs", "channel", "playlist", "history"]) createFeed(name);
+  syncSubButtons();
   showFeed("home");
 
   // Tell the user up front if yt-dlp is missing, instead of on their first search.

@@ -38,13 +38,15 @@ server/
     ytdlp.js              # spawns yt-dlp safely (no shell), caches, caps concurrency
     hls.js                 # HLS proxy helpers: opaque-token URL registry + m3u8 rewriting
     routes.js              # /api/youtube/* routes, incl. the stream + HLS proxies
+    sponsorblock.js        # SponsorBlock lookups (hash-prefix API, fixed host)
   config/
     proxies.json           # list of available proxy providers (shown in the UI dropdown)
 public/
   index.html               # single-page shell: Browser tab + YouTube tab
   css/style.css
   js/app.js                 # proxy picker, service worker registration, address bar
-  js/youtube.js              # search, custom player + shortcuts, queue
+  js/youtube.js              # search, custom player + shortcuts, queue, feeds
+  js/ytpure.js               # DOM-free player logic (unit tested)
   uv/uv.config.js             # tells Ultraviolet's client where the bare server is
 ```
 
@@ -175,8 +177,22 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   tell *why* a video has no playable stream (e.g. no JS runtime).
 - `GET /api/youtube/stream/:id?f=<formatId>` -- proxies the media bytes with
   `Range` support, using the headers yt-dlp says that URL needs. If YouTube
-  rejects a cached URL (expired) it re-runs yt-dlp once and retries. Only
-  for *combined* audio+video formats.
+  rejects a cached URL (expired) it re-runs yt-dlp once and retries. Works for
+  combined audio+video formats and for the video-only / audio-only files
+  (`adaptive` in the video info); for those, every upstream request is capped
+  to a 10 MB byte window because YouTube throttles open-ended ones.
+- `GET /api/youtube/channel/:id?page=` -- a channel's uploads (`UC...` id), 20
+  per page (up to 10 pages): `{ channel, results, hasMore }`.
+- `GET /api/youtube/playlist/:id?page=` -- a playlist (`PL...`, `UU...` or
+  `OLAK5uy_...` id), same paging: `{ playlist, results, hasMore }`.
+- `GET /api/youtube/subscriptions?channels=UC..,UC..&page=` -- a feed built from
+  up to 6 channel ids the *browser* sends (its own subscription list; the
+  server keeps none), interleaved like Home.
+- `GET /api/youtube/captions/:id/:lang.vtt` -- WebVTT for one language listed in
+  the video's `captions` (manual subtitles, plus the original-language
+  auto-captions). The upstream URL comes from yt-dlp's output, never the caller.
+- `GET /api/youtube/sponsorblock/:id` -- skippable segments from SponsorBlock;
+  any failure returns an empty list.
 - `GET /api/youtube/hls/:id/master.m3u8` -- adaptive playback entry point for
   hls.js. Fetches YouTube's master playlist and rewrites every URL in it.
 - `GET /api/youtube/hls/seg/:token` -- serves variant playlists (rewritten
@@ -234,24 +250,64 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
   lazily (only when the YouTube view is showing). "Clear watch history" wipes
   it.
 
-Playback picks the simplest path available: a *combined* audio+video file
-if YouTube offers one, otherwise adaptive HLS through hls.js (quality menu
-gets an **Auto** entry plus one entry per resolution; your last choice is
-remembered). If neither exists the player says what YouTube did offer.
+**Playback** builds one quality menu from everything YouTube offers: a
+*combined* audio+video file where one exists (usually 360p), and above that a
+*video-only* file paired with an *audio-only* file. The latter plays as a
+`<video>` plus a hidden `<audio>` kept in step (play/pause/seek/rate/volume,
+and any drift over 0.3 s is corrected). The browser's `canPlayType` picks the
+codecs (H.264 first, then VP9, then AV1; AAC audio first, then Opus), and the
+default is the best quality up to 1080p (your last choice is remembered). If a
+separate-audio quality fails, the player drops to the best combined stream.
+Only when there is nothing of that kind does it use adaptive HLS through
+hls.js (an **Auto** entry plus one per resolution). If nothing works the
+player says what YouTube did offer.
 
-**Not built yet:** separate video-only + audio-only playback (DASH-style), a
-live-stream-specific path (HLS live may or may not work; untested), and
-trending (yt-dlp has no reliable equivalent). The old Invidious backend was
+**More player and library features:**
+
+- **Channel pages, playlists, subscriptions** -- paste a video, channel or
+  playlist link into the search box to open it; click the channel name under
+  the player to open its page; Subscribe keeps channel ids in `localStorage`
+  (`ytSubs`; the Subscriptions tab mixes your 6 most recently added channels).
+- **Captions** -- a CC menu appears when the video has subtitles or original
+  auto-captions; the choice is remembered.
+- **SponsorBlock** (opt-in checkbox, off by default) -- skips sponsor / self-promo
+  / interaction / intro / outro segments, once per segment so you can seek back.
+- **Watch history page** -- remove single entries, export or import JSON
+  (imports are validated entry by entry).
+- **Resume position** (`ytResume`), **loop** (R), **picture-in-picture** (I),
+  **theater mode** (T), and a remembered **playback speed**.
+
+**Not built yet:** local (saved) playlists, a live-stream-specific path (HLS
+live may or may not work; untested), and trending (yt-dlp has no reliable
+equivalent). The old Invidious backend was
 removed: in testing, every public instance either disabled the API, put it
 behind a bot check/auth, or returned empty video info to programmatic
 clients, so it can't back a server-side player.
 
-**Privacy note:** watch history lives only in this browser's `localStorage`;
-the server is stateless and just receives the few video ids it needs to build
-Home. yt-dlp contacts YouTube from the machine running this
+**Privacy note:** watch history, subscriptions and resume positions live only
+in this browser's `localStorage`; the server is stateless and just receives the
+few video / channel ids it needs to build Home and Subscriptions. SponsorBlock
+is opt-in: when enabled, this server asks `sponsor.ajay.app` using the
+hash-prefix API, so only the first 4 hex characters of the video id's SHA-256
+leave the server, never the id itself. yt-dlp contacts YouTube from the machine running this
 server, using that machine's own IP -- it does not go through the bare
 backends. Result thumbnails are also loaded by the browser directly from
 `i.ytimg.com`.
+
+## Tests
+
+```bash
+npm test
+```
+
+Runs `node --test test/` (no extra dependencies): id validators, yt-dlp
+output parsing, HLS rewriting, SponsorBlock filtering, range capping, the pure
+player logic in `public/js/ytpure.js`, and the real `public/js/youtube.js`
+executed against a small fake DOM with canned API responses. The fake DOM
+checks wiring and error-free execution; it cannot decode media, so real
+playback still needs checking in a browser. With a server running, you can also
+try `node scripts/smoke-live.js http://localhost:3000` to drive the client
+against live YouTube.
 
 ## A note on responsible use
 
