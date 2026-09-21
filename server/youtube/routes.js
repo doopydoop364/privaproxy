@@ -3,14 +3,30 @@ const express = require("express");
 const { Readable } = require("stream");
 const yt = require("./ytdlp");
 const hlsLib = require("./hls");
+const sponsorblock = require("./sponsorblock");
 
 const router = express.Router();
 
 const FORMAT_RE = /^[A-Za-z0-9._-]{1,40}$/;
 
+// YouTube throttles open-ended requests for its video-only/audio-only files, so
+// for those we cap every upstream request to a bounded byte window (the browser
+// simply asks for the next window as it plays, like yt-dlp's own chunked download).
+const ADAPTIVE_CHUNK = 10 * 1024 * 1024;
+
+// "bytes=a-b" / "bytes=a-" -> a bounded range, or null for anything we don't rewrite.
+function boundRange(header, chunk) {
+  const m = /^bytes=(\d+)-(\d*)$/.exec(String(header || "").trim());
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = m[2] === "" ? start + chunk - 1 : Math.min(Number(m[2]), start + chunk - 1);
+  return end >= start ? `bytes=${start}-${end}` : null;
+}
+
 const STATUS_BY_CODE = {
   bad_id: 400,
   bad_page: 400,
+  bad_request: 400,
   unavailable: 404,
   not_installed: 503,
   timeout: 504,
@@ -196,7 +212,8 @@ router.get("/stream/:id", async (req, res) => {
     let up;
     try {
       const headers = { ...target.headers };
-      if (req.headers.range) headers.Range = req.headers.range;
+      if (target.adaptive) headers.Range = boundRange(req.headers.range, ADAPTIVE_CHUNK) || `bytes=0-${ADAPTIVE_CHUNK - 1}`;
+      else if (req.headers.range) headers.Range = req.headers.range;
       up = await fetch(target.url, { headers, signal: ac.signal, redirect: "follow" });
     } catch {
       if (ac.signal.aborted) return;
@@ -212,7 +229,7 @@ router.get("/stream/:id", async (req, res) => {
       cancelBody(up);
       return res.status(502).json({ error: "upstream_error", message: `YouTube's video servers returned ${up.status}.` });
     }
-    return pipeUpstream(req, res, up, target.ext === "webm" ? "video/webm" : "video/mp4");
+    return pipeUpstream(req, res, up, target.mime || "video/mp4");
   }
 });
 
@@ -292,4 +309,84 @@ router.get("/hls/seg/:token", async (req, res) => {
   }
 });
 
+// ---- GET /api/youtube/channel/:id?page=1 ----
+// A channel's uploads, newest first: { channel: {id, name}, results, hasMore }.
+router.get("/channel/:id", async (req, res) => {
+  try {
+    const r = await yt.channel(req.params.id, req.query.page, 20);
+    res.json({ channel: r.channel, results: r.items, hasMore: r.hasMore });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/playlist/:id?page=1 ----
+router.get("/playlist/:id", async (req, res) => {
+  try {
+    const r = await yt.playlist(req.params.id, req.query.page, 20);
+    res.json({ playlist: r.playlist, results: r.items, hasMore: r.hasMore });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/subscriptions?channels=UC...,UC...&page=1 ----
+// A feed built from the caller's own subscriptions (the browser keeps the list; the
+// server keeps nothing). Each channel contributes its newest uploads, interleaved
+// round-robin. Capped like /home so it can't monopolise yt-dlp; failing channels
+// are skipped unless every one fails.
+const MAX_CHANNELS = 6;
+router.get("/subscriptions", async (req, res) => {
+  const channels = [...new Set(String(req.query.channels || "").split(",").map((x) => x.trim()).filter(Boolean))];
+  if (!channels.length) return res.status(400).json({ error: "bad_request", message: "Missing ?channels=" });
+  if (channels.length > MAX_CHANNELS) return res.status(400).json({ error: "bad_request", message: `At most ${MAX_CHANNELS} channels.` });
+  if (!channels.every((id) => yt.CHANNEL_RE.test(id))) return res.status(400).json({ error: "bad_id", message: "Invalid channel id." });
+
+  const outcomes = await Promise.allSettled(channels.map((id) => yt.channel(id, req.query.page, 6)));
+  const ok = outcomes.filter((o) => o.status === "fulfilled").map((o) => o.value);
+  if (!ok.length) return sendError(res, outcomes[0].reason);
+
+  const seen = new Set();
+  const results = [];
+  const longest = Math.max(...ok.map((r) => r.items.length));
+  for (let i = 0; i < longest; i++) {
+    for (const r of ok) {
+      const item = r.items[i];
+      if (item && !seen.has(item.id)) {
+        seen.add(item.id);
+        results.push(item);
+      }
+    }
+  }
+  res.json({ results, hasMore: ok.some((r) => r.hasMore) });
+});
+
+// ---- GET /api/youtube/captions/:id/:lang.vtt ----
+// WebVTT for one of the languages listed in the video's `captions`. The upstream
+// URL is looked up from yt-dlp's output for this video, never taken from the caller.
+router.get("/captions/:id/:lang.vtt", async (req, res) => {
+  const { id, lang } = req.params;
+  if (!yt.ID_RE.test(id)) return res.status(400).json({ error: "bad_id", message: "Invalid video id." });
+  try {
+    const text = await yt.captionText(id, lang);
+    if (text === null) return res.status(404).json({ error: "no_captions", message: "No captions in that language." });
+    res.set({ "content-type": "text/vtt; charset=utf-8", "cache-control": "private, max-age=3600" }).send(text);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ---- GET /api/youtube/sponsorblock/:id ----
+// Skippable segments [{start, end, category}] from SponsorBlock. Off the critical path:
+// any failure is reported as "none" so playback never depends on a third party.
+router.get("/sponsorblock/:id", async (req, res) => {
+  if (!yt.ID_RE.test(req.params.id)) return res.status(400).json({ error: "bad_id", message: "Invalid video id." });
+  try {
+    res.json({ segments: await sponsorblock.segmentsFor(req.params.id) });
+  } catch {
+    res.json({ segments: [] });
+  }
+});
+
 module.exports = router;
+module.exports._boundRange = boundRange;

@@ -20,12 +20,19 @@
 const { spawn } = require("child_process");
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
+// Channel ids are always "UC" + 22 chars; playlists are "PL"/"UU"/"OLAK5uy_" + a body.
+// Anything else is rejected, so we only ever build youtube.com URLs from ids we validated.
+const CHANNEL_RE = /^UC[A-Za-z0-9_-]{22}$/;
+const PLAYLIST_RE = /^(PL|UU|OLAK5uy_)[A-Za-z0-9_-]{10,60}$/;
+const LANG_RE = /^[A-Za-z0-9-]{1,20}$/;
 const MAX_STDOUT_BYTES = 30 * 1024 * 1024;
 const VIDEO_TTL_MS = 20 * 60 * 1000; // stream URLs live ~6h; refresh well before
 const SEARCH_TTL_MS = 5 * 60 * 1000;
 const STATUS_TTL_MS = 60 * 1000;
 const RELATED_TTL_MS = 10 * 60 * 1000;
-const MAX_PAGES = { search: 10, related: 10 };
+const LIST_TTL_MS = 10 * 60 * 1000;
+const MAX_PAGES = { search: 10, related: 10, channel: 10, playlist: 10 };
+const MAX_CAPTION_BYTES = 2 * 1024 * 1024;
 
 const cfg = () => ({
   bin: process.env.YTDLP_PATH || "yt-dlp",
@@ -204,6 +211,8 @@ const searchMemo = makeMemo(SEARCH_TTL_MS, 100);
 const relatedMemo = makeMemo(RELATED_TTL_MS, 200);
 const videoMemo = makeMemo(VIDEO_TTL_MS, 50);
 const statusMemo = makeMemo(STATUS_TTL_MS, 1);
+const channelMemo = makeMemo(LIST_TTL_MS, 100);
+const playlistMemo = makeMemo(LIST_TTL_MS, 100);
 
 // ---------- public API ----------
 
@@ -215,6 +224,7 @@ function normalizeEntry(e) {
     id: e.id,
     title: String(e.title || "Untitled"),
     author: String(e.channel || e.uploader || ""),
+    channelId: CHANNEL_RE.test(e.channel_id || "") ? e.channel_id : null,
     duration: Number.isFinite(e.duration) ? e.duration : null,
     views: Number.isFinite(e.view_count) ? e.view_count : null,
     isLive: e.live_status === "is_live",
@@ -255,6 +265,37 @@ const isProgressive = (f) =>
   f && f.url && /^https?$/.test(f.protocol || "") &&
   f.vcodec && f.vcodec !== "none" && f.acodec && f.acodec !== "none" &&
   (f.ext === "mp4" || f.ext === "webm");
+
+// Video-only / audio-only files served over plain https (YouTube's DASH files). They
+// support Range requests, so <video>/<audio> can play them directly; the client plays
+// one of each side by side. (The m3u8_native variants are HLS and handled separately.)
+const isHttps = (f) => f && f.url && /^https?$/.test(f.protocol || "");
+const isAdaptiveVideo = (f) =>
+  isHttps(f) && f.vcodec && f.vcodec !== "none" && (!f.acodec || f.acodec === "none") &&
+  (f.ext === "mp4" || f.ext === "webm") && f.height > 0;
+const isAdaptiveAudio = (f) =>
+  isHttps(f) && f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none") &&
+  (f.ext === "m4a" || f.ext === "webm") && !/drc/i.test(String(f.format_id));
+const mimeFor = (f, kind) => `${kind}/${f.ext === "m4a" ? "mp4" : f.ext}`;
+
+// Manual subtitles plus (only the original-language) automatic captions, as WebVTT.
+// The caption URLs stay server-side; the client asks for a language and we look it up.
+function collectCaptions(info) {
+  const out = new Map(); // lang -> { lang, name, auto, url }
+  const add = (dict, auto) => {
+    for (const [lang, tracks] of Object.entries(dict || {})) {
+      if (out.size >= 25 || !LANG_RE.test(lang) || out.has(lang) || !Array.isArray(tracks)) continue;
+      const vtt = tracks.find((t) => t && t.ext === "vtt" && /^https:\/\/www\.youtube\.com\/api\/timedtext\?/.test(t.url || ""));
+      if (vtt) out.set(lang, { lang, name: String(vtt.name || lang).slice(0, 60), auto, url: vtt.url });
+    }
+  };
+  add(info.subtitles, false);
+  const autos = info.automatic_captions || {};
+  const origOnly = {};
+  for (const k of Object.keys(autos)) if (/-orig$/.test(k)) origOnly[k] = autos[k];
+  add(origOnly, true);
+  return out;
+}
 
 const isHls = (f) => f && String(f.protocol || "").startsWith("m3u8") && f.vcodec && f.vcodec !== "none";
 
@@ -300,10 +341,36 @@ function buildVideo(info, stderr) {
     }))
     .sort((a, b) => b.height - a.height || (b.ext === "mp4") - (a.ext === "mp4"));
 
+  const adaptiveVideo = formats.filter(isAdaptiveVideo).map((f) => ({
+    formatId: String(f.format_id),
+    height: f.height,
+    fps: f.fps || null,
+    ext: f.ext,
+    mime: mimeFor(f, "video"),
+    vcodec: f.vcodec,
+    tbr: f.tbr || 0,
+  }));
+  const adaptiveAudio = formats.filter(isAdaptiveAudio).map((f) => ({
+    formatId: String(f.format_id),
+    ext: f.ext,
+    mime: mimeFor(f, "audio"),
+    acodec: f.acodec,
+    abr: f.abr || f.tbr || 0,
+  }));
+  adaptiveVideo.sort((a, b) => b.height - a.height || b.tbr - a.tbr);
+  adaptiveAudio.sort((a, b) => b.abr - a.abr);
+
   const internal = new Map();
   for (const f of progressive) {
-    internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext });
+    internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext, mime: `video/${f.ext}`, adaptive: false });
   }
+  for (const f of formats.filter(isAdaptiveVideo)) {
+    internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext, mime: mimeFor(f, "video"), adaptive: true });
+  }
+  for (const f of formats.filter(isAdaptiveAudio)) {
+    internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext, mime: mimeFor(f, "audio"), adaptive: true });
+  }
+  const captions = collectCaptions(info);
   const hls = pickHlsMaster(formats);
 
   const warnings = stderr
@@ -317,17 +384,22 @@ function buildVideo(info, stderr) {
       id: info.id,
       title: String(info.title || "Untitled"),
       author: String(info.channel || info.uploader || ""),
+      channelId: CHANNEL_RE.test(info.channel_id || "") ? info.channel_id : null,
       duration: Number.isFinite(info.duration) ? info.duration : null,
       views: Number.isFinite(info.view_count) ? info.view_count : null,
       description: String(info.description || "").slice(0, 1500),
       isLive: !!info.is_live,
       thumbnail: thumbFor(info.id),
       streams,
+      adaptive: { video: adaptiveVideo.slice(0, 40), audio: adaptiveAudio.slice(0, 6) },
+      captions: [...captions.values()].map(({ lang, name, auto }) => ({ lang, name, auto })),
       defaultFormatId: streams[0] ? streams[0].formatId : null,
       hls: !!hls, // adaptive playback is possible via /api/youtube/hls/:id/master.m3u8
       // What YouTube actually offered; lets us see why a video may not be playable yet.
       available: {
         progressive: progressive.length,
+        adaptiveVideo: adaptiveVideo.length,
+        adaptiveAudio: adaptiveAudio.length,
         hls: formats.filter(isHls).length,
         videoOnly: formats.filter((f) => f.vcodec && f.vcodec !== "none" && (!f.acodec || f.acodec === "none")).length,
         audioOnly: formats.filter((f) => f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none")).length,
@@ -335,6 +407,7 @@ function buildVideo(info, stderr) {
       warnings,
     },
     internal,
+    captions,
     hls,
   };
 }
@@ -360,6 +433,21 @@ async function resolveStream(id, formatId) {
   const v = await loadVideo(id);
   const fid = formatId || v.pub.defaultFormatId;
   return (fid && v.internal.get(String(fid))) || null;
+}
+
+// The WebVTT text for one caption language of a video, or null if there isn't one.
+// The upstream URL comes from yt-dlp's own output for this video, never from the caller.
+async function captionText(id, lang) {
+  if (!LANG_RE.test(lang)) throw new YtdlpError("bad_request", "Invalid language.");
+  const track = (await loadVideo(id)).captions.get(lang);
+  if (!track) return null;
+  const up = await fetch(track.url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
+  if (!up.ok) throw new YtdlpError("failed", `YouTube returned ${up.status} for the captions.`);
+  const buf = Buffer.from(await up.arrayBuffer());
+  if (buf.length > MAX_CAPTION_BYTES) throw new YtdlpError("failed", "Captions were unexpectedly large.");
+  const text = buf.toString("utf8");
+  if (!text.trimStart().startsWith("WEBVTT")) throw new YtdlpError("failed", "YouTube didn't return WebVTT captions.");
+  return text;
 }
 
 // Returns {url, headers} for the chosen HLS master playlist, or null.
@@ -426,6 +514,51 @@ async function related(id, page = 1, size = 20) {
   });
 }
 
+// Shared by channels and playlists: one page of a flat playlist page at `url`.
+async function flatPage(url, p, size) {
+  const c = cfg();
+  const [start, end] = pageRange(p, size);
+  const { stdout } = await run(["--flat-playlist", "-J", "-I", `${start}:${end}`, ...commonArgs(c), "--", url]);
+  const data = parseJson(stdout);
+  const raw = Array.isArray(data.entries) ? data.entries : [];
+  return {
+    title: String(data.title || "").replace(/ - Videos$/, ""),
+    author: String(data.channel || data.uploader || ""),
+    channelId: CHANNEL_RE.test(data.channel_id || "") ? data.channel_id : null,
+    items: raw.map(normalizeEntry).filter(Boolean),
+    hasMore: raw.length >= size,
+  };
+}
+
+// One page of a channel's uploads (newest first): { channel: {id, name}, items, hasMore }.
+async function channel(id, page = 1, size = 20) {
+  if (!CHANNEL_RE.test(id)) throw new YtdlpError("bad_id", "Invalid channel id.");
+  const s = clampSize(size, 20);
+  const p = clampPage(page, MAX_PAGES.channel);
+  return channelMemo.get(`${id}:${p}:${s}`, async () => {
+    const r = await flatPage(`https://www.youtube.com/channel/${id}/videos`, p, s);
+    const name = r.title || r.author;
+    // Flat channel entries carry no author of their own; fill it in from the channel.
+    const items = r.items.map((i) => ({ ...i, author: i.author || name, channelId: i.channelId || id }));
+    return { channel: { id, name }, items, hasMore: r.hasMore && p < MAX_PAGES.channel };
+  });
+}
+
+// One page of a playlist: { playlist: {id, title, author}, items, hasMore }.
+async function playlist(id, page = 1, size = 20) {
+  if (!PLAYLIST_RE.test(id)) throw new YtdlpError("bad_id", "Invalid playlist id.");
+  const s = clampSize(size, 20);
+  const p = clampPage(page, MAX_PAGES.playlist);
+  return playlistMemo.get(`${id}:${p}:${s}`, async () => {
+    const r = await flatPage(`https://www.youtube.com/playlist?list=${id}`, p, s);
+    return {
+      playlist: { id, title: r.title, author: r.author },
+      items: r.items,
+      hasMore: r.hasMore && p < MAX_PAGES.playlist,
+    };
+  });
+}
+
 async function status() {
   return statusMemo.get("v", async () => {
     const c = cfg();
@@ -435,7 +568,8 @@ async function status() {
 }
 
 module.exports = {
-  YtdlpError, ID_RE,
-  search, related, getVideo, resolveStream, resolveHls, invalidateVideo, status,
-  _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); },
+  YtdlpError, ID_RE, CHANNEL_RE, PLAYLIST_RE,
+  search, related, channel, playlist, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
+  _buildVideo: buildVideo,
+  _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); channelMemo.clear(); playlistMemo.clear(); },
 };
