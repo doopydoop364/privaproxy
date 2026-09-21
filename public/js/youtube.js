@@ -76,8 +76,9 @@
   function fmtViews(n) {
     if (!Number.isFinite(n)) return "";
     const short = (x, unit) => `${x.toFixed(x >= 10 ? 0 : 1).replace(/\.0$/, "")}${unit} views`;
-    if (n >= 1e9) return short(n / 1e9, "B");
-    if (n >= 1e6) return short(n / 1e6, "M");
+    // Thresholds sit just under each unit so rounding can't print "1000K".
+    if (n >= 999.5e6) return short(n / 1e9, "B");
+    if (n >= 999.5e3) return short(n / 1e6, "M");
     if (n >= 1e3) return short(n / 1e3, "K");
     return `${n} views`;
   }

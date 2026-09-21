@@ -78,9 +78,25 @@ function renderProxyOptions(proxies) {
   return proxies.find((p) => p.id === proxyPicker.value) || null;
 }
 
+// id of the backend bare-mux is actually using right now. The dropdown can
+// change without the person touching it (a backend going offline, or the
+// first list load failing), so every refresh re-syncs the transport to
+// whatever ends up selected instead of assuming the two agree.
+let appliedProxyId = null;
+
+async function switchToProxy(proxy) {
+  if (!bareMuxConnection || !proxy || proxy.id === appliedProxyId) return;
+  await bareMuxConnection.setTransport("/baremod/index.mjs", [
+    location.origin + proxy.bareEndpoint,
+  ]);
+  appliedProxyId = proxy.id;
+}
+
 async function refreshProxies() {
   try {
-    return renderProxyOptions(await fetchProxies());
+    const selected = renderProxyOptions(await fetchProxies());
+    await switchToProxy(selected);
+    return selected;
   } catch (err) {
     console.error("Failed to load proxy list:", err);
     proxyDot.className = "proxy-dot offline";
@@ -88,24 +104,13 @@ async function refreshProxies() {
   }
 }
 
-async function switchToProxy(proxy) {
-  if (!bareMuxConnection || !proxy) return;
-  await bareMuxConnection.setTransport("/baremod/index.mjs", [
-    location.origin + proxy.bareEndpoint,
-  ]);
-}
-
-proxyPicker.addEventListener("change", async () => {
-  const proxies = await fetchProxies();
-  const selected = proxies.find((p) => p.id === proxyPicker.value);
-  if (selected) await switchToProxy(selected);
-});
+proxyPicker.addEventListener("change", () => refreshProxies());
 
 async function setupProxy() {
-  const initial = await refreshProxies();
+  await refreshProxies(); // renders the list; can't switch yet, bare-mux isn't connected
 
   bareMuxConnection = new BareMuxConnection("/baremux/worker.js");
-  await switchToProxy(initial);
+  await refreshProxies(); // now applies the selected backend
 
   if ("serviceWorker" in navigator) {
     await navigator.serviceWorker
@@ -113,8 +118,8 @@ async function setupProxy() {
       .catch((err) => console.error("Service worker registration failed:", err));
   }
 
-  // Keeps the latency figures fresh; doesn't change the active transport
-  // unless the person picks a different entry themselves. Matches how often
+  // Keeps the latency figures fresh, and moves the transport if the selected
+  // backend went offline and the dropdown fell back to another one. Matches how often
   // the server re-measures (DEFAULT_INTERVAL_MS in server/proxies/latency.js).
   setInterval(refreshProxies, PROXY_REFRESH_MS);
 }
@@ -125,6 +130,12 @@ setupProxy();
 // Ultraviolet's pure JS), but it uses the same bare-mux transport, so
 // switchToProxy() above already covers it too -- no separate backend
 // selection needed here.
+// The option stays disabled until the controller is ready: a tab created
+// earlier would otherwise silently fall back to Ultraviolet.
+const scramjetOption = enginePicker.querySelector('option[value="scramjet"]');
+scramjetOption.disabled = true;
+scramjetOption.textContent = "Scramjet (loading…)";
+
 async function setupScramjet() {
   try {
     const { ScramjetController } = $scramjetLoadController();
@@ -143,8 +154,11 @@ async function setupScramjet() {
         .register("/scramjet/sw.js", { scope: "/scramjet/service/" })
         .catch((err) => console.error("Scramjet service worker registration failed:", err));
     }
+    scramjetOption.disabled = false;
+    scramjetOption.textContent = "Scramjet";
   } catch (err) {
     console.error("Scramjet setup failed:", err);
+    scramjetOption.textContent = "Scramjet (unavailable)";
   }
 }
 setupScramjet();
@@ -160,7 +174,8 @@ const newTabBtn = document.getElementById("newTabBtn");
 function normalizeUrl(raw) {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const looksLikeUrl = /^https?:\/\//i.test(trimmed) || /^[\w-]+(\.[\w-]+)+/.test(trimmed);
+  // A space means a search phrase ("what is node.js"), never a URL.
+  const looksLikeUrl = !/\s/.test(trimmed) && (/^https?:\/\//i.test(trimmed) || /^[\w-]+(\.[\w-]+)+/.test(trimmed));
   if (looksLikeUrl) {
     return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   }

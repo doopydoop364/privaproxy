@@ -86,6 +86,7 @@ module.exports = {
     server.on("upgrade", (req, socket, head) => {
       const match = bareServers.find((b) => b.server.shouldRoute(req));
       if (match) match.server.routeUpgrade(req, socket, head);
+      else socket.destroy(); // nobody owns this upgrade; don't leave the socket open forever
     });
   },
 
