@@ -61,8 +61,10 @@ one next to it):
   transport Ultraviolet uses, so switching the "Primary/Secondary" backend
   affects both engines' tabs.
 
-The engine picker determines which engine a **new** tab uses at creation
-time; existing tabs keep whichever engine they were opened with, since
+The Scramjet entry is disabled (labelled "loading…") until its controller has
+initialised, so a tab can never silently fall back to Ultraviolet; if setup
+fails it shows "(unavailable)". The engine picker determines which engine a
+**new** tab uses at creation time; existing tabs keep whichever engine they were opened with, since
 switching engines under an already-loaded page would mean discarding it
 anyway.
 
@@ -76,7 +78,11 @@ currently has 6 high-severity `npm audit` findings (last released Oct
 2023), so we went with Scramjet instead.
 
 **Bare backends**: The proxy dropdown shows available bare server instances
-from `server/config/proxies.json`. Currently three are configured:
+from `server/config/proxies.json`. If the selected backend goes offline the
+dropdown falls back to the first online one, and the page re-applies the
+bare-mux transport on every refresh so the backend in use always matches
+the selection. WebSocket upgrade requests that no bare server owns are
+closed immediately. Currently three are configured:
 
 - **Primary** (`/bare/`) — default local bare server, tests via `gstatic.com`
 - **Secondary** (`/bare2/`) — a second local instance for switching demo
@@ -117,12 +123,12 @@ with HTTP 429 and the checker itself flipped a backend to a false "offline".
 The proxy system is intentionally pluggable, since you mentioned wanting to
 choose between several proxies (and eventually VPNs) later:
 
-1. Create `server/proxies/yourProvider.js` exporting `{ id, name, mount(app, server), healthCheck() }` — see `providerInterface.js` for the exact contract.
+1. Create `server/proxies/yourProvider.js` exporting `{ id, name, mount(app, server), healthCheck() }` — see `providerInterface.js` for the exact contract. (Per-backend status in the dropdown comes from `latency.js` for providers that expose `bareServers`; `healthCheck()` isn't called by `/api/proxies` yet.)
 2. Register it in `server/proxies/registry.js`'s `PROVIDER_MODULES` map.
 3. Add an entry for it in `server/config/proxies.json`.
 
-The dropdown in the UI and the `/api/proxies` health-check endpoint pick up
-new providers automatically — no frontend changes needed.
+The dropdown in the UI and the `/api/proxies` endpoint pick up
+new bare backends automatically — no frontend changes needed.
 
 **Ideas for a second provider**: point Ultraviolet's client at a *second*,
 remotely-hosted bare server (gives you multiple "exit points" without a new
