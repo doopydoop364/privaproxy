@@ -764,10 +764,10 @@
   }
 
   // If a separate-video/audio quality fails, drop to the best single-file quality.
-  function fallBackFromAdaptive(reason) {
+  function fallBackFromAdaptive(reason, autoplay = !video.paused) {
     const combined = current.qlist.find((o) => o.kind === "combined");
     if (!combined) return false;
-    loadOption(combined, { autoplay: !video.paused, resumeAt: video.currentTime });
+    loadOption(combined, { autoplay, resumeAt: video.currentTime });
     const msg = `${reason} Switched to ${combined.label}.`;
     setMessage(msg);
     setTimeout(() => playerMsg.textContent === msg && setMessage(""), 5000);
@@ -796,6 +796,7 @@
 
   // ---------- separate audio kept in step with the video ----------
 
+  let heldForAudio = false; // true while WE paused the video to wait for the audio
   const audioPlay = () => {
     const p = audio.play();
     if (p && p.catch) p.catch(() => {});
@@ -805,7 +806,9 @@
     audio.currentTime = video.currentTime;
     audioPlay();
   });
-  video.addEventListener("pause", () => adaptiveActive && audio.pause());
+  // (Not while we paused the video ourselves to wait for the audio: pausing the audio
+  // then would stop the very thing we're waiting for, and playback would never resume.)
+  video.addEventListener("pause", () => adaptiveActive && !heldForAudio && audio.pause());
   video.addEventListener("waiting", () => adaptiveActive && audio.pause());
   video.addEventListener("playing", () => {
     if (!adaptiveActive) return;
@@ -830,23 +833,38 @@
   });
   // If the audio stalls while the video keeps going, hold the video until audio catches up
   // (otherwise the drift grows and the correction above would be audible).
-  let heldForAudio = false;
+  // ...but never for long: if the audio can't start (blocked autoplay, a dead stream), give up
+  // on it rather than leave the video loading forever.
+  const AUDIO_HOLD_MS = 5000;
+  let holdTimer = null;
+  const releaseHold = () => {
+    heldForAudio = false;
+    clearTimeout(holdTimer);
+  };
   audio.addEventListener("waiting", () => {
     if (!adaptiveActive || video.paused) return;
     heldForAudio = true;
     video.pause();
     setBuffering(true);
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      if (!heldForAudio) return;
+      releaseHold();
+      if (!fallBackFromAdaptive("The audio for that quality is too slow to load.", true)) {
+        setBuffering(false);
+        const p = video.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+    }, AUDIO_HOLD_MS);
   });
   audio.addEventListener("playing", () => {
     if (!heldForAudio) return;
-    heldForAudio = false;
+    releaseHold();
     setBuffering(false);
     const p = video.play();
     if (p && p.catch) p.catch(() => {});
   });
-  video.addEventListener("play", () => {
-    heldForAudio = false; // someone (or something) resumed: no longer waiting on audio
-  });
+  video.addEventListener("play", releaseHold); // someone (or something) resumed: no longer waiting on audio
   audio.addEventListener("error", () => {
     if (!adaptiveActive) return;
     if (!fallBackFromAdaptive("The audio for that quality couldn't be played.")) {
@@ -1154,7 +1172,7 @@
 
   function togglePlay() {
     if (!hasMedia()) return;
-    heldForAudio = false; // an explicit user choice wins over an automatic hold
+    releaseHold(); // an explicit user choice wins over an automatic hold
     if (video.paused) {
       const p = video.play();
       if (p && p.catch) p.catch(() => {});

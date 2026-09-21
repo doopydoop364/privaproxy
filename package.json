@@ -19,5 +19,8 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "hls.js": "^1.7.3"
+  },
+  "allowScripts": {
+    "@mercuryworkshop/scramjet@1.1.0": true
   }
 }

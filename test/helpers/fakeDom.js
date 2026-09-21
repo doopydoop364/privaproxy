@@ -88,8 +88,20 @@ class El {
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
   closest(sel) { for (let n = this; n; n = n.parent) if (n.tagName !== "#text" && matches(n, sel)) return n; return null; }
   focus() {} blur() {} select() {} load() {} scrollIntoView() {}
-  pause() { this.paused = true; }
-  play() { this.paused = false; this.plays++; return Promise.resolve(); }
+  // Like a real media element: state flips at once, the event follows asynchronously.
+  pause() {
+    if (this.paused) return;
+    this.paused = true;
+    queueMicrotask(() => this.dispatch("pause"));
+  }
+  play() {
+    this.plays++;
+    if (this.paused) {
+      this.paused = false;
+      queueMicrotask(() => this.dispatch("play"));
+    }
+    return Promise.resolve();
+  }
   canPlayType() { return "probably"; }
   requestPictureInPicture() { return Promise.resolve(); }
   requestFullscreen() { return Promise.resolve(); }
