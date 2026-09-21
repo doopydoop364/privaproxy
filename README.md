@@ -75,6 +75,13 @@ We evaluated Rammerhead as a second engine first, but its dependency tree
 currently has 6 high-severity `npm audit` findings (last released Oct
 2023), so we went with Scramjet instead.
 
+**Bare backends**: The proxy dropdown shows available bare server instances
+from `server/config/proxies.json`. Currently three are configured:
+
+- **Primary** (`/bare/`) — default local bare server, tests via `gstatic.com`
+- **Secondary** (`/bare2/`) — a second local instance for switching demo
+- **Tertiary** (`/bare/`) — third test URL via `cloudflare.com/cdn-cgi/trace`
+
 ## Adding another proxy provider
 
 The proxy system is intentionally pluggable, since you mentioned wanting to
@@ -91,6 +98,10 @@ new providers automatically — no frontend changes needed.
 remotely-hosted bare server (gives you multiple "exit points" without a new
 engine), or wire in [Rammerhead](https://github.com/binary-person/rammerhead)
 as a genuinely different proxy engine.
+
+**Latency checks**: The server pings each bare backend every second (configurable
+via `YTDLP_CONCURRENCY`/`YTDLP_TIMEOUT_MS` env vars) using test URLs from
+`server/config/proxies.json` to report online status and latency in the UI.
 
 ## Adding VPN support later
 
