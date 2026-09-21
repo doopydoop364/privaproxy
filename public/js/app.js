@@ -23,6 +23,8 @@ const enginePicker = document.getElementById("enginePicker");
 let bareMuxConnection = null;
 let scramjetController = null;
 
+const PROXY_REFRESH_MS = 5000;
+
 function formatProxyLabel(p) {
   if (p.online === false) return `${p.name} (offline)`;
   if (typeof p.latencyMs === "number") return `${p.name} — ${p.latencyMs}ms`;
@@ -39,23 +41,36 @@ async function fetchProxies() {
 // online, otherwise falls back to the first online entry).
 function renderProxyOptions(proxies) {
   const previousValue = proxyPicker.value;
-  proxyPicker.innerHTML = "";
 
-  proxies.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = formatProxyLabel(p);
-    opt.disabled = p.online === false;
-    proxyPicker.appendChild(opt);
-  });
+  const sameBackends =
+    proxyPicker.options.length === proxies.length &&
+    proxies.every((p, i) => proxyPicker.options[i].value === p.id);
+
+  if (sameBackends) {
+    // Same backends as last time: just refresh the labels in place. Rebuilding
+    // the <select> on every refresh would snap it shut if the person had it
+    // open when one landed -- and refreshes now come every few seconds.
+    proxies.forEach((p, i) => {
+      const opt = proxyPicker.options[i];
+      opt.textContent = formatProxyLabel(p);
+      opt.disabled = p.online === false;
+    });
+  } else {
+    proxyPicker.innerHTML = "";
+    proxies.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = formatProxyLabel(p);
+      opt.disabled = p.online === false;
+      proxyPicker.appendChild(opt);
+    });
+  }
 
   const stillGood = proxies.some((p) => p.id === previousValue && p.online !== false);
-  if (stillGood) {
-    proxyPicker.value = previousValue;
-  } else {
-    const firstOnline = proxies.find((p) => p.online !== false) || proxies[0];
-    if (firstOnline) proxyPicker.value = firstOnline.id;
-  }
+  const wanted = stillGood
+    ? previousValue
+    : (proxies.find((p) => p.online !== false) || proxies[0] || {}).id;
+  if (wanted !== undefined && proxyPicker.value !== wanted) proxyPicker.value = wanted;
 
   const anyOnline = proxies.some((p) => p.online);
   proxyDot.className = "proxy-dot " + (anyOnline ? "online" : "offline");
@@ -99,8 +114,9 @@ async function setupProxy() {
   }
 
   // Keeps the latency figures fresh; doesn't change the active transport
-  // unless the person picks a different entry themselves.
-  setInterval(refreshProxies, 20000);
+  // unless the person picks a different entry themselves. Matches how often
+  // the server re-measures (DEFAULT_INTERVAL_MS in server/proxies/latency.js).
+  setInterval(refreshProxies, PROXY_REFRESH_MS);
 }
 setupProxy();
 

@@ -82,6 +82,36 @@ from `server/config/proxies.json`. Currently three are configured:
 - **Secondary** (`/bare2/`) — a second local instance for switching demo
 - **Tertiary** (`/bare/`) — third test URL via `cloudflare.com/cdn-cgi/trace`
 
+## Backend latency checks
+
+The backend dropdown shows a live latency next to each of the entries above.
+Note that "Tertiary" is served by the same `/bare/` server as "Primary", so it
+differs only in which URL it measures.
+
+`server/proxies/latency.js` makes a real timed request through each backend's
+actual code path (the same bare client the browser uses) and the page shows
+the latest result:
+
+- **Every 5 s per backend** (`DEFAULT_INTERVAL_MS`), and the page re-fetches
+  at the same rate (`PROXY_REFRESH_MS` in `public/js/app.js`).
+- **8 s timeout** (`DEFAULT_TIMEOUT_MS`): a check that takes longer is aborted
+  and the backend shows as offline, instead of staying "checking..." forever.
+  Aborting also frees the bare server's upstream connection.
+- **One check at a time per backend**: a slow backend never accumulates
+  overlapping requests, and only a check's own outcome is recorded, so a
+  result that arrives after its timeout can't overwrite a newer one.
+- Override with the `LATENCY_INTERVAL_MS` / `LATENCY_TIMEOUT_MS` environment
+  variables. Any HTTP response from the test URL counts as online; the check
+  only proves the proxy path works.
+
+**Why not faster:** each check is a real request to a third-party URL from this
+machine, and every request through a bare server spends a point from its
+per-IP rate limit (1000 per minute, `connectionLimiter` in `ultraviolet.js`),
+a budget real browsing shares. The checker uses about 25 points/minute of
+`/bare/` at 5 s. At a 1 s interval it used 120, and simulated browsing at 15
+requests/second (which fits comfortably at 5 s) then got requests refused
+with HTTP 429 and the checker itself flipped a backend to a false "offline".
+
 ## Adding another proxy provider
 
 The proxy system is intentionally pluggable, since you mentioned wanting to
@@ -99,9 +129,8 @@ remotely-hosted bare server (gives you multiple "exit points" without a new
 engine), or wire in [Rammerhead](https://github.com/binary-person/rammerhead)
 as a genuinely different proxy engine.
 
-**Latency checks**: The server pings each bare backend every second (configurable
-via `YTDLP_CONCURRENCY`/`YTDLP_TIMEOUT_MS` env vars) using test URLs from
-`server/config/proxies.json` to report online status and latency in the UI.
+**Latency checks**: see [Backend latency checks](#backend-latency-checks) above for
+how often each bare backend is measured and how to change it.
 
 ## Adding VPN support later
 
