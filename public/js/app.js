@@ -168,6 +168,10 @@ const browseForm = document.getElementById("browseForm");
 const urlInput = document.getElementById("urlInput");
 const frameWrap = document.getElementById("frameWrap");
 const browserEmpty = document.getElementById("browserEmpty");
+const emptyDefault = document.getElementById("emptyDefault");
+const bookmarksPanel = document.getElementById("bookmarksPanel");
+const bookmarksGrid = document.getElementById("bookmarksGrid");
+const bookmarkBtn = document.getElementById("bookmarkBtn");
 const tabStrip = document.getElementById("tabStrip");
 const newTabBtn = document.getElementById("newTabBtn");
 
@@ -345,8 +349,117 @@ async function restoreTabs() {
 function applyDecodedUrl(tab, decoded) {
   tab.realUrl = decoded;
   tab.tabEl.querySelector(".browser-tab-title").textContent = hostnameOf(decoded);
-  if (tab.id === activeTabId) urlInput.value = decoded;
+  if (tab.id === activeTabId) {
+    urlInput.value = decoded;
+    updateBookmarkBtn();
+  }
   loadFavicon(tab, decoded); // fire-and-forget; updates the pill once it resolves
+}
+
+// ---------- Bookmarks + new-tab page ----------
+// { url, title, favicon } per entry; favicon is whatever data: URI the tab was
+// showing when bookmarked (DEFAULT_FAVICON, or a same-origin one loadFavicon()
+// already fetched through the proxy -- never an external image URL, same as
+// tab pills already only ever hold data: URIs here).
+const BOOKMARKS_KEY = "browserBookmarks";
+const BOOKMARKS_MAX = 200;
+
+function readBookmarks() {
+  try {
+    const list = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((b) => b && typeof b.url === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeBookmarks(list) {
+  try {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(list.slice(0, BOOKMARKS_MAX)));
+  } catch {
+    /* storage unavailable: bookmarks just won't persist */
+  }
+}
+
+const isBookmarked = (url) => !!url && readBookmarks().some((b) => b.url === url);
+
+function toggleBookmark(tab) {
+  if (!tab || !tab.realUrl) return;
+  const list = readBookmarks();
+  const idx = list.findIndex((b) => b.url === tab.realUrl);
+  if (idx === -1) {
+    list.unshift({
+      url: tab.realUrl,
+      title: tab.tabEl.querySelector(".browser-tab-title").textContent || hostnameOf(tab.realUrl),
+      favicon: tab.tabEl.querySelector(".browser-tab-favicon").src,
+    });
+  } else {
+    list.splice(idx, 1);
+  }
+  writeBookmarks(list);
+  updateBookmarkBtn();
+  if (!browserEmpty.hidden) renderBookmarks(); // the new-tab page is showing right now: keep it live
+}
+
+function updateBookmarkBtn() {
+  const tab = getTab(activeTabId);
+  bookmarkBtn.disabled = !(tab && tab.realUrl);
+  const on = !!(tab && isBookmarked(tab.realUrl));
+  bookmarkBtn.classList.toggle("is-bookmarked", on);
+  bookmarkBtn.textContent = on ? "★" : "☆"; // filled / outline star
+  bookmarkBtn.title = on ? "Remove bookmark" : "Bookmark this page";
+}
+
+// The empty-state page shown for a tab with nothing loaded: your bookmarks if
+// you have any (click to open, × to remove), or the plain hint otherwise.
+function renderBookmarks() {
+  const list = readBookmarks();
+  emptyDefault.hidden = list.length > 0;
+  bookmarksPanel.hidden = list.length === 0;
+  if (!list.length) return;
+
+  bookmarksGrid.replaceChildren();
+  for (const b of list) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "bookmark-card";
+    card.title = b.url;
+
+    const icon = document.createElement("img");
+    icon.className = "bookmark-favicon";
+    icon.alt = "";
+    icon.src = b.favicon || DEFAULT_FAVICON;
+    card.appendChild(icon);
+
+    const text = document.createElement("span");
+    text.className = "bookmark-text";
+    const title = document.createElement("span");
+    title.className = "bookmark-title";
+    title.textContent = b.title || hostnameOf(b.url); // never innerHTML: page titles are untrusted
+    const host = document.createElement("span");
+    host.className = "bookmark-host";
+    host.textContent = hostnameOf(b.url);
+    text.append(title, host);
+    card.appendChild(text);
+
+    card.addEventListener("click", () => navigateTab(activeTabId, b.url));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "bookmark-remove";
+    remove.textContent = "×";
+    remove.title = "Remove bookmark";
+    remove.setAttribute("aria-label", "Remove bookmark");
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation(); // don't also trigger the card's own click (navigate)
+      writeBookmarks(readBookmarks().filter((x) => x.url !== b.url));
+      updateBookmarkBtn();
+      renderBookmarks();
+    });
+    card.appendChild(remove);
+
+    bookmarksGrid.appendChild(card);
+  }
 }
 
 function createTab(initialTarget, engine) {
@@ -439,10 +552,14 @@ function setActiveTab(id) {
     urlInput.value = "";
     browserEmpty.hidden = false;
     browserEmpty.style.display = "";
+    renderBookmarks();
   }
   updateNavButtons();
+  updateBookmarkBtn();
   saveTabs();
 }
+
+bookmarkBtn.addEventListener("click", () => toggleBookmark(getTab(activeTabId)));
 
 function closeTab(id) {
   const idx = tabs.findIndex((t) => t.id === id);
@@ -597,6 +714,7 @@ function navigateTab(id, rawTarget) {
     urlInput.value = target;
     browserEmpty.hidden = true;
     browserEmpty.style.display = "none";
+    updateBookmarkBtn();
   }
 }
 
@@ -640,6 +758,7 @@ function goHistory(tab, direction) {
   if (tab.id === activeTabId) {
     urlInput.value = target;
     updateNavButtons();
+    updateBookmarkBtn();
   }
 }
 

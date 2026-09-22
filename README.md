@@ -100,6 +100,16 @@ reason the engine picker's Scramjet option stays disabled until then); if
 Scramjet fails to set up at all, that tab is restored under Ultraviolet
 instead of being dropped.
 
+**Bookmarks / new-tab page**: the star button in the address bar bookmarks
+the active tab's page (title, URL, and whatever favicon the tab was
+currently showing -- always a `data:` URI already fetched through the proxy,
+same as tab pills, never an external image URL). Bookmarks are saved to
+`localStorage` (`browserBookmarks`) and shown as a grid on a tab with
+nothing loaded, replacing the plain "Nothing loaded yet" hint once you have
+at least one; click a card to open it in that tab, or the &times; to remove
+it. Titles come from proxied pages, so they're rendered with `textContent`
+only, never `innerHTML`.
+
 **Bare backends**: The proxy dropdown shows available bare server instances
 from `server/config/proxies.json`. If the selected backend goes offline the
 dropdown falls back to the first online one, and the page re-applies the

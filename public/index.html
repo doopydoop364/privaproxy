@@ -44,14 +44,21 @@
           spellcheck="false"
           placeholder="Enter a URL or search term"
         />
+        <button type="button" id="bookmarkBtn" class="nav-btn" title="Bookmark this page" disabled>&#9734;</button>
         <button type="submit">Go</button>
       </form>
     </div>
 
     <div class="frame-wrap" id="frameWrap">
       <div id="browserEmpty" class="empty-state">
-        <p>Nothing loaded yet.</p>
-        <p class="empty-sub">Type a URL above and hit Go — it'll route through the selected proxy.</p>
+        <div id="emptyDefault">
+          <p>Nothing loaded yet.</p>
+          <p class="empty-sub">Type a URL above and hit Go — it'll route through the selected proxy.</p>
+        </div>
+        <div id="bookmarksPanel" class="bookmarks-panel" hidden>
+          <h2 class="bookmarks-title">Bookmarks</h2>
+          <div id="bookmarksGrid" class="bookmarks-grid"></div>
+        </div>
       </div>
     </div>
   </section>
