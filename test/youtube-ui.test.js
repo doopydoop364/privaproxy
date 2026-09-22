@@ -43,7 +43,21 @@ function boot(seed) {
       if (url.startsWith("/api/youtube/sponsorblock/")) return { status: 200, body: { segments: [{ start: 10, end: 20, category: "sponsor" }] } };
       if (url.startsWith("/api/youtube/related/")) return { status: 200, body: { results: [{ ...item("rrrrrrrrrrr", "Mix video"), uploadedAt: null, uploadedApprox: false }, { ...item("sssssssssss", "Mix video 2"), uploadedAt: null, uploadedApprox: false }], hasMore: false } };
       if (url.startsWith("/api/youtube/dates")) return { status: 200, body: { dates: { rrrrrrrrrrr: Math.floor(Date.now() / 1000) - 2 * 365.25 * 86400 - 5 * 86400 } } };
-      if (url.startsWith("/api/youtube/home")) return { status: 200, body: { results: [], hasMore: false } };
+      if (url.startsWith("/api/youtube/home")) {
+        if (/[?&]group=1\b/.test(url)) {
+          return {
+            status: 200,
+            body: {
+              groups: [
+                { seedId: "aaaaaaaaaaa", items: [item("hhhhhhhhhh1", "Home A"), item("hhhhhhhhhh2", "Home A2")], hasMore: false },
+                { seedId: "bbbbbbbbbbb", items: [item("hhhhhhhhhh3", "Home B")], hasMore: false },
+              ],
+              hasMore: false,
+            },
+          };
+        }
+        return { status: 200, body: { results: [item("hhhhhhhhhh1", "Home A"), item("hhhhhhhhhh3", "Home B")], hasMore: false } };
+      }
       return { status: 404, body: { error: "nope", message: "unexpected request " + url } };
     },
   });
@@ -72,6 +86,34 @@ test("loads without errors and shows the home empty state", async () => {
   assert.ok(env.requests.includes("/api/youtube/status"));
   assert.match(feedSection(env, "home").textContent, /Recommendations appear here/);
   assert.equal(env.byId.get("ytPip").hidden, false);
+});
+
+test("Home feed ordering dropdown: hidden outside Home, switches to group=1 for Diverse", async () => {
+  const env = boot({
+    ytHistory: JSON.stringify([
+      { id: "aaaaaaaaaaa", title: "A", author: "", thumbnail: "", duration: null },
+      { id: "bbbbbbbbbbb", title: "B", author: "", thumbnail: "", duration: null },
+    ]),
+  });
+  await tick();
+  const sel = env.byId.get("ytHomeAlgo");
+  assert.equal(sel.hidden, false, "shown while Home is the active tab");
+  assert.equal(sel.value, "balanced", "default before any change");
+  assert.equal(env.requests.some((u) => u.startsWith("/api/youtube/home") && !u.includes("group=1")), true);
+  assert.equal(env.requests.some((u) => u.includes("group=1")), false);
+  assert.ok(cards(env, "home").length > 0, "balanced results rendered");
+
+  sel.value = "diverse";
+  sel.dispatch("change");
+  await tick();
+  assert.equal(JSON.parse(env.store.get("ytHomeAlgo")), "diverse", "choice is persisted");
+  assert.equal(env.requests.some((u) => u.startsWith("/api/youtube/home") && u.includes("group=1")), true, "Diverse asks the server for per-seed groups instead of its own interleave");
+  assert.ok(cards(env, "home").length > 0, "still renders results after switching algorithm");
+
+  tabBtn(env, "subs").dispatch("click");
+  assert.equal(sel.hidden, true, "hidden away from Home");
+  tabBtn(env, "home").dispatch("click");
+  assert.equal(sel.hidden, false);
 });
 
 test("pasting a playlist link opens it, lists videos and offers Play all", async () => {

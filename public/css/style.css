@@ -748,6 +748,22 @@ button {
   gap: 12px;
   border-bottom: 1px solid var(--border);
 }
+.yt-feed-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.yt-home-algo {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.yt-home-algo:hover {
+  border-color: var(--accent-yt);
+}
 .yt-feed-tabs {
   display: flex;
   gap: 4px;

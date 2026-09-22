@@ -201,7 +201,10 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
 - `GET /api/youtube/home?seeds=id1,id2,...&page=` -- the "recommended" feed,
   built from up to 5 video ids the *browser* sends (its own watch history);
   the server keeps no history. Related lists for each seed are interleaved
-  and de-duplicated; seeds that fail are skipped unless all fail.
+  and de-duplicated; seeds that fail are skipped unless all fail. `&group=1`
+  returns the same per-seed lists unmixed (`{ groups: [{ seedId, items,
+  hasMore }], hasMore }`) for a client that wants to combine them itself --
+  used by the "Diverse" Home ordering.
 - `GET /api/youtube/video/:id` -- metadata, playable combined `streams`, and an
   `hls` flag (adaptive playback available). Never exposes YouTube URLs. Includes `available` counts (combined / HLS /
   video-only / audio-only) and any yt-dlp `warnings`, which is how you can
@@ -292,7 +295,15 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
   key `ytHistory`, newest first, max 100), and Home shows related videos for
   your 4 most recent watches, minus anything you've already watched. It loads
   lazily (only when the YouTube view is showing). "Clear watch history" wipes
-  it.
+  it. A dropdown next to it picks how those related videos get combined:
+  **For You** is the plain round-robin across your 4 seeds (the original,
+  and still the default); **Diverse** asks the server for the same per-seed
+  candidates unmixed (`&group=1`) and reorders them client-side by
+  round-robining across *channels* instead of seeds, so a channel that
+  dominates several seeds' related lists doesn't crowd out the rest (see
+  `diversify()` in `public/js/ytpure.js`). Both read the identical yt-dlp
+  output through the same cache, so switching does no extra work server-side.
+  The choice is remembered (`localStorage` key `ytHomeAlgo`).
 
 **Playback** builds one quality menu from everything YouTube offers: a
 *combined* audio+video file where one exists (usually 360p), and above that a

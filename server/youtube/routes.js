@@ -189,9 +189,26 @@ router.get("/home", async (req, res) => {
   if (seeds.length > MAX_SEEDS) return res.status(400).json({ error: "bad_request", message: `At most ${MAX_SEEDS} seeds.` });
   if (!seeds.every((id) => yt.ID_RE.test(id))) return res.status(400).json({ error: "bad_id", message: "Invalid video id in seeds." });
 
-  const outcomes = await Promise.allSettled(seeds.map((id) => yt.related(id, req.query.page, 8)));
-  const ok = outcomes.filter((o) => o.status === "fulfilled").map((o) => o.value);
-  if (!ok.length) return sendError(res, outcomes[0].reason);
+  const settled = await Promise.allSettled(seeds.map((id) => yt.related(id, req.query.page, 8)));
+  const ok = [];
+  settled.forEach((o, i) => {
+    if (o.status === "fulfilled") ok.push({ seedId: seeds[i], ...o.value });
+  });
+  if (!ok.length) return sendError(res, settled[0].reason);
+
+  // ?group=1: the per-seed lists as-is (still deduped against the seeds themselves),
+  // for a client that wants to combine them with something other than the plain
+  // round-robin below -- e.g. a diversity pass across channels. Same yt.related() call
+  // either way, so switching between the two costs no extra yt-dlp work.
+  if (req.query.group) {
+    const seen = new Set(seeds);
+    const groups = ok.map((r) => ({
+      seedId: r.seedId,
+      items: r.items.filter((item) => !seen.has(item.id)),
+      hasMore: r.hasMore,
+    }));
+    return res.json({ groups, hasMore: groups.some((g) => g.hasMore) });
+  }
 
   const seen = new Set(seeds); // never recommend the videos we seeded from
   const results = [];

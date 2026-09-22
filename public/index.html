@@ -141,7 +141,13 @@
         <button type="button" class="yt-feed-tab" data-feed="playlist" role="tab" aria-selected="false" hidden>Playlist</button>
         <button type="button" class="yt-feed-tab" data-feed="history" role="tab" aria-selected="false">History</button>
       </div>
-      <button id="ytClearHistory" class="yt-link-btn" type="button" hidden>Clear watch history</button>
+      <div class="yt-feed-bar-right">
+        <select id="ytHomeAlgo" class="yt-home-algo" aria-label="Home feed ordering" hidden>
+          <option value="balanced">For You</option>
+          <option value="diverse">Diverse</option>
+        </select>
+        <button id="ytClearHistory" class="yt-link-btn" type="button" hidden>Clear watch history</button>
+      </div>
     </div>
     <div id="ytFeeds"></div>
   </section>

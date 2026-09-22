@@ -121,9 +121,9 @@ function makeEnv({ respond, seed = {} }) {
   const root = new El("body");
   const ids = ["view-youtube", "ytSearchForm", "ytSearchInput", "ytBanner", "ytFeedTabs", "ytFeeds", "ytClearHistory", "ytPlayerWrap", "ytPlayer", "ytVideo",
     "ytSpinner", "ytPlayerMsg", "ytSeek", "ytPlayBtn", "ytNextBtn", "ytMuteBtn", "ytVolume", "ytTime", "ytSpeed", "ytQuality", "ytFullscreen", "ytTitle", "ytChannel",
-    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel", "ytClose"];
+    "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel", "ytClose", "ytHomeAlgo"];
   for (const id of ids) {
-    const e = new El(id === "ytVideo" ? "video" : id === "ytSearchInput" ? "input" : "div");
+    const e = new El(id === "ytVideo" ? "video" : id === "ytSearchInput" ? "input" : id === "ytHomeAlgo" ? "select" : "div");
     byId.set(id, e);
     root.appendChild(e);
   }
@@ -146,6 +146,7 @@ function makeEnv({ respond, seed = {} }) {
   byId.get("ytCaptionPanel").classList.add("yt-cc-panel");
   byId.get("ytCaptionStyleBtn").hidden = true;
   byId.get("ytCaptionPanel").hidden = true;
+  byId.get("ytHomeAlgo").hidden = true;
 
   const store = new Map(Object.entries(seed));
   const requests = [];

@@ -12,6 +12,7 @@
   const feedTabs = $("ytFeedTabs");
   const feedsEl = $("ytFeeds");
   const clearHistoryBtn = $("ytClearHistory");
+  const homeAlgoSel = $("ytHomeAlgo");
   const playerWrap = $("ytPlayerWrap");
   const player = $("ytPlayer");
   const video = $("ytVideo");
@@ -295,11 +296,29 @@
     }
   }
 
+  // ---------- Home feed ordering ----------
+  // "For You" (balanced): the server's own round-robin across your recent watches'
+  // related lists -- one endpoint, one request, matches every earlier version of Home.
+  // "Diverse": the *same* per-seed candidates (?group=1 asks the server not to
+  // interleave them itself), reordered client-side to spread out repeated channels
+  // instead of clustering them -- see diversify() in ytpure.js. Same yt-dlp work
+  // either way; only the ordering step differs.
+  const HOME_ALGO_KEY = "ytHomeAlgo";
+  const homeAlgorithm = () => (window.YtPure.HOME_ALGORITHMS.includes(store.get(HOME_ALGO_KEY, "balanced")) ? store.get(HOME_ALGO_KEY, "balanced") : "balanced");
+  homeAlgoSel.value = homeAlgorithm();
+  homeAlgoSel.addEventListener("change", () => {
+    store.set(HOME_ALGO_KEY, homeAlgoSel.value);
+    feeds.home.sig = null; // force ensureHome() to rebuild with the new ordering
+    ensureHome();
+    kickFeed(feeds.home); // already on the Home tab: nothing else would trigger the reload
+  });
+
   function ensureHome() {
     const feed = feeds.home;
     const seeds = homeSeeds();
-    const sig = seeds.join(",");
-    if (feed.sig === sig) return; // nothing watched since we last built it
+    const algo = homeAlgorithm();
+    const sig = `${seeds.join(",")}:${algo}`;
+    if (feed.sig === sig) return; // nothing watched, and no ordering change, since we last built it
     feed.sig = sig;
     if (!seeds.length) {
       resetFeed(feed, { fetchPage: null });
@@ -307,8 +326,15 @@
       return;
     }
     const watched = new Set(readHistory().map((h) => h.id));
+    const seedParam = seeds.map(encodeURIComponent).join(",");
     resetFeed(feed, {
-      fetchPage: (page) => api(`/api/youtube/home?seeds=${seeds.map(encodeURIComponent).join(",")}&page=${page}`),
+      fetchPage:
+        algo === "balanced"
+          ? (page) => api(`/api/youtube/home?seeds=${seedParam}&page=${page}`)
+          : async (page) => {
+              const data = await api(`/api/youtube/home?seeds=${seedParam}&page=${page}&group=1`);
+              return { results: window.YtPure.applyHomeAlgorithm(algo, data.groups), hasMore: data.hasMore };
+            },
       exclude: (item) => watched.has(item.id),
       emptyText: "Nothing to recommend right now.",
       autoload: false,
@@ -326,6 +352,17 @@
     });
   }
 
+  // Re-observing a sentinel that's already intersecting is what actually makes the
+  // IntersectionObserver report it again -- a real one only fires on a *change*, so
+  // just calling resetFeed() (e.g. after switching Home's ordering while already on
+  // that tab) wouldn't otherwise load anything until the person scrolls away and back.
+  function kickFeed(feed) {
+    if (observer && feed.fetchPage && !feed.done) {
+      observer.unobserve(feed.sentinel);
+      observer.observe(feed.sentinel);
+    }
+  }
+
   function showFeed(name) {
     activeFeed = name;
     for (const tab of feedTabs.querySelectorAll(".yt-feed-tab")) {
@@ -339,12 +376,10 @@
     if (name === "history") ensureHistory();
     if (name === "related" && feeds.related.stale) startRelated();
     clearHistoryBtn.hidden = !(name === "home" && readHistory().length);
+    homeAlgoSel.hidden = name !== "home";
     const feed = feeds[name];
     wantDates(feed.items); // cards loaded while this list was hidden
-    if (observer && feed.fetchPage && !feed.done) {
-      observer.unobserve(feed.sentinel); // re-observing reports the current visibility
-      observer.observe(feed.sentinel);
-    }
+    kickFeed(feed);
   }
 
   feedTabs.addEventListener("click", (e) => {

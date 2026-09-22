@@ -268,9 +268,76 @@
     return [...(existing || []), ...clean].filter((h) => (seen.has(h.id) ? false : seen.add(h.id))).slice(0, max);
   }
 
+  // ---------- Home feed ordering ----------
+
+  const HOME_ALGORITHMS = ["balanced", "diverse"];
+
+  // Plain round-robin across each seed's related list (one from seed 1, one from seed
+  // 2, ...), deduplicated -- what the server's own /home endpoint already returns by
+  // default. Used client-side too so "diverse" (below) has something to build on from
+  // the ?group=1 groups, over exactly the same candidate pool the default gets.
+  function balancedInterleave(groups, seen = new Set()) {
+    const emitted = new Set(seen);
+    const out = [];
+    const longest = Math.max(0, ...groups.map((g) => (g.items || []).length));
+    for (let i = 0; i < longest; i++) {
+      for (const g of groups) {
+        const item = (g.items || [])[i];
+        if (item && !emitted.has(item.id)) {
+          emitted.add(item.id);
+          out.push(item);
+        }
+      }
+    }
+    return out;
+  }
+
+  // Buckets the candidates by channel and round-robins across those buckets instead
+  // of across seeds, so repeats of the same channel -- even if it turns up related to
+  // more than one of your recent watches -- get spread through the feed instead of
+  // clustering together. A video with no channel info gets its own single-item bucket
+  // (never merged with anything else, so it can't accidentally cluster either).
+  function diversify(groups, seen = new Set()) {
+    const byChannel = new Map();
+    const order = [];
+    const emitted = new Set(seen);
+    for (const g of groups) {
+      for (const item of g.items || []) {
+        if (emitted.has(item.id)) continue;
+        emitted.add(item.id);
+        const key = item.channelId || `id:${item.id}`;
+        if (!byChannel.has(key)) {
+          byChannel.set(key, []);
+          order.push(key);
+        }
+        byChannel.get(key).push(item);
+      }
+    }
+    const out = [];
+    let more = true;
+    while (more) {
+      more = false;
+      for (const key of order) {
+        const q = byChannel.get(key);
+        if (q.length) {
+          out.push(q.shift());
+          if (q.length) more = true;
+        }
+      }
+    }
+    return out;
+  }
+
+  // Applies the named Home algorithm to the per-seed groups from GET
+  // /api/youtube/home?...&group=1. Unknown/omitted names fall back to "balanced".
+  function applyHomeAlgorithm(algorithm, groups, seen) {
+    return algorithm === "diverse" ? diversify(groups, seen) : balancedInterleave(groups, seen);
+  }
+
   return {
     fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl, channelImagePath,
     CAPTION_CHOICES, DEFAULT_CAPTION_STYLE, normalizeCaptionStyle, captionDeclarations, captionCss, cueLine,
+    HOME_ALGORITHMS, balancedInterleave, diversify, applyHomeAlgorithm,
     parseYoutubeInput,
     pickAudio, buildQualityList, choosePreferred,
     driftCorrection, segmentToSkip,

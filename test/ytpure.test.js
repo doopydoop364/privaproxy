@@ -205,3 +205,59 @@ test("cueLine maps position to a VTT line", () => {
   assert.equal(P.cueLine("raised"), -4);
   assert.equal(P.cueLine("top"), 0);
 });
+
+// ---------- Home feed ordering ----------
+
+const item = (id, channelId) => ({ id, channelId, title: id });
+
+test("balancedInterleave: one from each seed in turn, deduplicated", () => {
+  const groups = [
+    { items: [item("a1", "A"), item("a2", "A"), item("a3", "A")] },
+    { items: [item("b1", "B")] }, // shorter list: just drops out once exhausted
+    { items: [item("a1", "A"), item("c1", "C")] }, // a1 repeats across groups
+  ];
+  assert.deepEqual(P.balancedInterleave(groups).map((i) => i.id), ["a1", "b1", "a2", "c1", "a3"]);
+});
+
+test("balancedInterleave respects an existing seen set", () => {
+  const groups = [{ items: [item("a1", "A"), item("a2", "A")] }];
+  assert.deepEqual(P.balancedInterleave(groups, new Set(["a1"])).map((i) => i.id), ["a2"]);
+});
+
+test("diversify spreads repeated channels instead of clustering them", () => {
+  // Channel A dominates both seeds' related lists (a very "samey" recommendation
+  // pool) -- a plain interleave would still show A, A, A before ever reaching B/C.
+  const groups = [
+    { items: [item("a1", "A"), item("a2", "A"), item("b1", "B")] },
+    { items: [item("a3", "A"), item("c1", "C")] },
+  ];
+  const out = P.diversify(groups).map((i) => i.id);
+  assert.deepEqual(out.slice(0, 3).sort(), ["a1", "b1", "c1"], "no two of the first three share a channel");
+  assert.equal(out.length, 5);
+  assert.deepEqual(new Set(out), new Set(["a1", "a2", "a3", "b1", "c1"]));
+});
+
+test("diversify dedupes a video that shows up related to more than one seed", () => {
+  const groups = [{ items: [item("x", "A")] }, { items: [item("x", "A"), item("y", "B")] }];
+  assert.deepEqual(P.diversify(groups).map((i) => i.id), ["x", "y"]);
+});
+
+test("diversify gives an item with no channel info its own bucket rather than merging it with others", () => {
+  const groups = [{ items: [item("a1", null), item("a2", null), item("b1", "B")] }];
+  // two channel-less items must not be treated as "the same channel" and separated
+  // from each other the way two real same-channel items would be
+  const out = P.diversify(groups).map((i) => i.id);
+  assert.deepEqual(new Set(out), new Set(["a1", "a2", "b1"]));
+});
+
+test("applyHomeAlgorithm dispatches by name and falls back to balanced", () => {
+  const groups = [{ items: [item("a1", "A")] }, { items: [item("b1", "B")] }];
+  assert.deepEqual(P.applyHomeAlgorithm("diverse", groups).map((i) => i.id).sort(), ["a1", "b1"]);
+  assert.deepEqual(P.applyHomeAlgorithm("balanced", groups).map((i) => i.id), ["a1", "b1"]);
+  assert.deepEqual(P.applyHomeAlgorithm("nonsense", groups).map((i) => i.id), ["a1", "b1"], "unknown name falls back to balanced");
+  assert.deepEqual(P.applyHomeAlgorithm(undefined, groups).map((i) => i.id), ["a1", "b1"]);
+});
+
+test("HOME_ALGORITHMS lists exactly the supported names", () => {
+  assert.deepEqual(P.HOME_ALGORITHMS, ["balanced", "diverse"]);
+});
