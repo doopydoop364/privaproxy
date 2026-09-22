@@ -161,7 +161,7 @@ async function setupScramjet() {
     scramjetOption.textContent = "Scramjet (unavailable)";
   }
 }
-setupScramjet();
+const scramjetReady = setupScramjet(); // awaited before restoring a saved Scramjet tab (see restoreTabs)
 
 // ---------- Address bar / tabs -> proxied iframes ----------
 const browseForm = document.getElementById("browseForm");
@@ -266,6 +266,73 @@ function syncTabOrderFromDom() {
     (el) => el.dataset.tabId
   );
   tabs.sort((a, b) => orderedIds.indexOf(a.id) - orderedIds.indexOf(b.id));
+  saveTabs();
+}
+
+// ---------- Restoring tabs after a reload ----------
+// Just engine + URL per tab, in order, plus which one was active -- not the
+// full back/forward history (a fresh load on restore is a fine trade for the
+// simplicity, same as goHistory's fresh loads within a session).
+const TABS_KEY = "browserTabs";
+const TABS_MAX = 20;
+
+function saveTabs() {
+  try {
+    const snapshot = tabs.filter((t) => t.realUrl).slice(-TABS_MAX);
+    localStorage.setItem(
+      TABS_KEY,
+      JSON.stringify({
+        tabs: snapshot.map((t) => ({ engine: t.engine, url: t.realUrl })),
+        activeIndex: snapshot.findIndex((t) => t.id === activeTabId),
+      })
+    );
+  } catch {
+    /* storage unavailable: tabs just won't persist */
+  }
+}
+
+function readSavedTabs() {
+  try {
+    const data = JSON.parse(localStorage.getItem(TABS_KEY) || "null");
+    if (!data || !Array.isArray(data.tabs)) return null;
+    const list = data.tabs
+      .filter((t) => t && typeof t.url === "string" && (t.engine === "uv" || t.engine === "scramjet"))
+      .slice(0, TABS_MAX);
+    if (!list.length) return null;
+    return { tabs: list, activeIndex: Number.isInteger(data.activeIndex) ? data.activeIndex : -1 };
+  } catch {
+    return null;
+  }
+}
+
+// Recreates the tabs open at the end of the last session, or -- if there's
+// nothing saved, storage is unavailable, or it's the first visit -- falls
+// back to the usual single empty tab.
+async function restoreTabs() {
+  const saved = readSavedTabs();
+  if (!saved) {
+    createTab();
+    return;
+  }
+  // A saved Scramjet tab needs the controller ready first, or (see the
+  // comment by scramjetOption above) it would silently open as Ultraviolet
+  // instead. Restoring is the one place a tab's engine isn't the person's own
+  // live choice, so this wait is worth it here even though picking Scramjet
+  // from the dropdown itself doesn't block on it.
+  if (saved.tabs.some((t) => t.engine === "scramjet")) await scramjetReady;
+
+  const originalEngine = enginePicker.value;
+  const restored = saved.tabs.map((t) => {
+    // Scramjet failed to set up since this was saved: fall back to Ultraviolet
+    // rather than lose the tab.
+    const engine = t.engine === "scramjet" && scramjetOption.disabled ? "uv" : t.engine;
+    enginePicker.value = engine;
+    return createTab(t.url);
+  });
+  enginePicker.value = originalEngine;
+
+  const active = restored[saved.activeIndex];
+  if (active) setActiveTab(active.id);
 }
 
 function applyDecodedUrl(tab, decoded) {
@@ -339,6 +406,7 @@ function createTab(initialTarget) {
     history: [],
     historyIndex: -1,
     suppressHistoryPush: false,
+    loading: false,
   };
   tabs.push(tab);
   setActiveTab(id);
@@ -366,6 +434,7 @@ function setActiveTab(id) {
     browserEmpty.style.display = "";
   }
   updateNavButtons();
+  saveTabs();
 }
 
 function closeTab(id) {
@@ -373,6 +442,7 @@ function closeTab(id) {
   if (idx === -1) return;
 
   const [tab] = tabs.splice(idx, 1); // remove from state immediately
+  saveTabs();
 
   // Animate the pill out, then actually remove the DOM nodes once the
   // transition finishes (with a timeout fallback in case it doesn't fire).
@@ -397,6 +467,45 @@ function closeTab(id) {
 function setTabFavicon(tab, src) {
   const img = tab.tabEl.querySelector(".browser-tab-favicon");
   if (img) img.src = src;
+}
+
+// Marks a tab as loading (or not): drives the spinner ring around its favicon
+// (pure CSS, see .browser-tab.is-loading) and, for the active tab, the
+// Reload/Stop button. Only our own navigations (address bar, back/forward,
+// reload) set this -- a link clicked *inside* a proxied page still updates the
+// address bar and history once it lands (see onFrameLoad/onScramjetUrlChange),
+// it just doesn't show a transient spinner for that step, the same for both
+// engines.
+function setTabLoading(tab, loading) {
+  tab.loading = loading;
+  tab.tabEl.classList.toggle("is-loading", loading);
+  if (tab.id === activeTabId) updateNavButtons();
+}
+
+function reloadTab(tab) {
+  if (!tab || !tab.realUrl) return;
+  setTabLoading(tab, true);
+  if (tab.engine === "scramjet") {
+    tab.scramjetFrame.reload();
+  } else {
+    try {
+      // Same-origin (UV proxies everything onto our own origin), and unlike
+      // re-assigning iframeEl.src to the same string, this reliably reloads.
+      tab.iframeEl.contentWindow.location.reload();
+    } catch {
+      tab.iframeEl.src = __uv$config.prefix + __uv$config.encodeUrl(tab.realUrl);
+    }
+  }
+}
+
+function stopTab(tab) {
+  if (!tab) return;
+  try {
+    tab.iframeEl.contentWindow.stop();
+  } catch {
+    // Cross-origin or already gone; nothing more we can do.
+  }
+  setTabLoading(tab, false);
 }
 
 // Fetches the page's favicon from *inside* the already-proxied iframe
@@ -455,6 +564,7 @@ function navigateTab(id, rawTarget) {
 
   tab.tabEl.querySelector(".browser-tab-title").textContent = hostnameOf(target);
   setTabFavicon(tab, DEFAULT_FAVICON);
+  setTabLoading(tab, true);
 
   if (tab.engine === "scramjet") {
     tab.scramjetFrame.go(target); // urlchange listener handles the rest
@@ -487,6 +597,7 @@ function pushHistory(tab, url) {
   tab.history.push(url);
   tab.historyIndex = tab.history.length - 1;
   if (tab.id === activeTabId) updateNavButtons();
+  saveTabs();
 }
 
 function goHistory(tab, direction) {
@@ -498,6 +609,7 @@ function goHistory(tab, direction) {
   tab.suppressHistoryPush = true;
   tab.tabEl.querySelector(".browser-tab-title").textContent = hostnameOf(target);
   setTabFavicon(tab, DEFAULT_FAVICON);
+  setTabLoading(tab, true);
 
   if (tab.engine === "scramjet") {
     tab.scramjetFrame.go(target); // NOT .back()/.forward() -- see comment above
@@ -516,6 +628,11 @@ function updateNavButtons() {
   const tab = getTab(activeTabId);
   backBtn.disabled = !(tab && tab.historyIndex > 0);
   forwardBtn.disabled = !(tab && tab.historyIndex < tab.history.length - 1);
+
+  reloadBtn.disabled = !(tab && tab.realUrl);
+  const loading = !!(tab && tab.loading);
+  reloadBtn.textContent = loading ? "✕" : "↻"; // stop (✕) / reload (↻)
+  reloadBtn.title = loading ? "Stop" : "Reload";
 }
 
 // Fires on every navigation inside a UV-proxied page too (not just the
@@ -524,6 +641,7 @@ function updateNavButtons() {
 function onFrameLoad(id) {
   const tab = getTab(id);
   if (!tab) return;
+  setTabLoading(tab, false);
 
   const decoded = decodeFrameUrl(tab.iframeEl.contentWindow);
   if (decoded) {
@@ -561,6 +679,7 @@ function onFrameLoad(id) {
 function onScramjetUrlChange(id, url) {
   const tab = getTab(id);
   if (!tab || !url) return;
+  setTabLoading(tab, false);
 
   applyDecodedUrl(tab, url);
 
@@ -584,6 +703,7 @@ newTabBtn.addEventListener("click", () => createTab());
 
 const backBtn = document.getElementById("backBtn");
 const forwardBtn = document.getElementById("forwardBtn");
+const reloadBtn = document.getElementById("reloadBtn");
 
 backBtn.addEventListener("click", () => {
   const tab = getTab(activeTabId);
@@ -592,6 +712,12 @@ backBtn.addEventListener("click", () => {
 forwardBtn.addEventListener("click", () => {
   const tab = getTab(activeTabId);
   if (tab) goHistory(tab, 1);
+});
+reloadBtn.addEventListener("click", () => {
+  const tab = getTab(activeTabId);
+  if (!tab) return;
+  if (tab.loading) stopTab(tab);
+  else reloadTab(tab);
 });
 
 browseForm.addEventListener("submit", (e) => {
@@ -603,4 +729,4 @@ browseForm.addEventListener("submit", (e) => {
   navigateTab(activeTabId, urlInput.value);
 });
 
-createTab(); // start with one empty tab
+restoreTabs(); // the tabs open at the end of the last session, or one empty tab

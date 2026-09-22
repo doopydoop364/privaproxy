@@ -70,14 +70,35 @@ fails it shows "(unavailable)". The engine picker determines which engine a
 switching engines under an already-loaded page would mean discarding it
 anyway.
 
-Known limitation: Scramjet's `ScramjetFrame` doesn't expose how many
-back/forward steps are available, so unlike Ultraviolet tabs (which grey
-out the buttons correctly), Scramjet tabs always show both nav buttons
-enabled. Clicking one with nothing to go to is a harmless no-op.
-
 We evaluated Rammerhead as a second engine first, but its dependency tree
 currently has 6 high-severity `npm audit` findings (last released Oct
 2023), so we went with Scramjet instead.
+
+Back/forward is tracked ourselves per tab (see the comment on `pushHistory`
+in `app.js`) rather than trusting either engine's native history, precisely
+so the Back/Forward buttons grey out correctly for **both** engines --
+including Scramjet, whose `ScramjetFrame` doesn't expose how many
+back/forward steps are available natively. (An earlier version of this
+note said Scramjet's buttons always showed enabled; verified against the
+current code, in both directions through real navigations, that this no
+longer holds -- the shared history stack the tabs already use was the fix.)
+
+**Reload / Stop**: the button next to Forward reloads the active tab
+(`ScramjetFrame.reload()`, or `contentWindow.location.reload()` for
+Ultraviolet -- same-origin, since both engines proxy everything onto our
+own origin) and turns into a Stop button (`contentWindow.stop()`) while a
+navigation is in flight, for either engine. Each tab's pill also shows a
+spinner ring around its favicon while it's loading.
+
+**Reopening tabs**: the tabs you have open (engine + URL, and which one was
+active) are saved to `localStorage` (`browserTabs`) as you browse and
+restored the next time you load the page -- not the full back/forward
+history of each tab, just where it currently is, the same trade-off
+`goHistory` already makes for a single session. A saved Scramjet tab waits
+for the controller to finish initialising before it's restored (same
+reason the engine picker's Scramjet option stays disabled until then); if
+Scramjet fails to set up at all, that tab is restored under Ultraviolet
+instead of being dropped.
 
 **Bare backends**: The proxy dropdown shows available bare server instances
 from `server/config/proxies.json`. If the selected backend goes offline the
