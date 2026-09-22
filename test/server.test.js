@@ -59,6 +59,36 @@ test("buildVideo separates combined, adaptive video/audio and captions", () => {
   assert.deepEqual(v.pub.captions, [{ lang: "en", name: "English", auto: false }, { lang: "en-orig", name: "English (Original)", auto: true }]);
 });
 
+test("buildVideo picks only the original-language audio, not YouTube's auto-dub variants", () => {
+  // Shaped like a real auto-dubbed video: one quality tier (140), ~20 near-identical-
+  // bitrate language variants, alphabetically NOT starting with the English original --
+  // exactly what let a foreign dub win a plain bitrate sort.
+  const dubbed = {
+    ...fixture,
+    formats: [
+      { format_id: "140-0", url: "https://g/140-0", protocol: "https", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", abr: 129.474, language: "ar", language_preference: -1 },
+      { format_id: "140-3", url: "https://g/140-3", protocol: "https", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", abr: 129.474, language: "es-US", language_preference: -1 },
+      { format_id: "140-19", url: "https://g/140-19", protocol: "https", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", abr: 129.474, language: "en-US", language_preference: 10 },
+      { format_id: "137", url: "https://g/137", protocol: "https", ext: "mp4", vcodec: "avc1.640028", acodec: "none", height: 1080, fps: 30, tbr: 4000 },
+    ],
+  };
+  const v = yt._buildVideo(dubbed, "");
+  assert.deepEqual(v.pub.adaptive.audio.map((a) => a.formatId), ["140-19"]);
+  assert.equal(v.internal.has("140-19"), true);
+  assert.equal(v.internal.has("140-0"), false, "the Arabic dub must not be selectable");
+  assert.equal(v.internal.has("140-3"), false, "the Spanish dub must not be selectable");
+});
+
+test("originalLanguageOnly is a no-op for an ordinary video with no dubs (uniform -1)", () => {
+  const list = [
+    { format_id: "140", language_preference: -1 },
+    { format_id: "251", language_preference: -1 },
+  ];
+  assert.deepEqual(yt._originalLanguageOnly(list), list);
+  // missing language_preference entirely (older yt-dlp) behaves the same as -1
+  assert.deepEqual(yt._originalLanguageOnly([{ format_id: "140" }]), [{ format_id: "140" }]);
+});
+
 test("boundRange caps open-ended and oversized ranges", () => {
   const b = routes._boundRange;
   assert.equal(b("bytes=0-", 100), "bytes=0-99");

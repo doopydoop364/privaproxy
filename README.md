@@ -302,6 +302,10 @@ and any drift over 0.3 s is corrected). The browser's `canPlayType` picks the
 codecs (H.264 first, then VP9, then AV1; AAC audio first, then Opus), and the
 default is the best quality up to 1080p (your last choice is remembered). If a
 separate-audio quality fails, the player drops to the best combined stream.
+Channels using YouTube's auto-dub feature can list 15-20 near-identical-
+bitrate audio tracks per quality tier, one per language -- only the original
+is ever offered for playback (picked via yt-dlp's `language_preference`),
+never a same-bitrate foreign dub a plain sort couldn't otherwise tell apart.
 Only when there is nothing of that kind does it use adaptive HLS through
 hls.js (an **Auto** entry plus one per resolution). If nothing works the
 player says what YouTube did offer.

@@ -335,13 +335,20 @@ button {
 .empty-state {
   position: absolute;
   inset: 0;
+  /* Tabs' iframes are appended to the DOM after this static element, so without an
+     explicit z-index they'd stack (and hit-test) above it -- normally harmless since
+     a blank "new tab" iframe paints nothing, so this still looks like it's on top, but
+     the iframe was still the element actually receiving clicks. That silently ate every
+     click on the bookmarks grid below. pointer-events: none (next) keeps this plain text
+     itself from blocking clicks through to the iframe; .bookmarks-panel opts back in. */
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--text-dim);
   text-align: center;
-  pointer-events: none; /* never let this block clicks on the iframe below it */
+  pointer-events: none;
 }
 
 .empty-sub {

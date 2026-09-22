@@ -309,6 +309,19 @@ const isAdaptiveAudio = (f) =>
   (f.ext === "m4a" || f.ext === "webm") && !/drc/i.test(String(f.format_id));
 const mimeFor = (f, kind) => `${kind}/${f.ext === "m4a" ? "mp4" : f.ext}`;
 
+// Among audio-only candidates, keep only the "most original" language tier. YouTube's
+// auto-dub feature can list 15-20 near-identical-bitrate language variants per quality
+// tier (format ids like "140-0".."140-19"), which sorting by bitrate alone can't tell
+// apart -- it silently picked whichever the source list happened to put first
+// (alphabetically by language code, i.e. usually not English). yt-dlp's own
+// `language_preference` marks the real original with the highest value when a video
+// actually has dubs, and is a uniform -1 across the board for an ordinary video with
+// no dubs at all, where this filter is a no-op.
+function originalLanguageOnly(list) {
+  const max = list.reduce((m, f) => Math.max(m, f.language_preference ?? -1), -1);
+  return list.filter((f) => (f.language_preference ?? -1) === max);
+}
+
 // Manual subtitles plus (only the original-language) automatic captions, as WebVTT.
 // The caption URLs stay server-side; the client asks for a language and we look it up.
 function collectCaptions(info) {
@@ -389,7 +402,8 @@ function buildVideo(info, stderr) {
     vcodec: f.vcodec,
     tbr: f.tbr || 0,
   }));
-  const adaptiveAudio = formats.filter(isAdaptiveAudio).map((f) => ({
+  const audioCandidates = originalLanguageOnly(formats.filter(isAdaptiveAudio));
+  const adaptiveAudio = audioCandidates.map((f) => ({
     formatId: String(f.format_id),
     ext: f.ext,
     mime: mimeFor(f, "audio"),
@@ -406,7 +420,7 @@ function buildVideo(info, stderr) {
   for (const f of formats.filter(isAdaptiveVideo)) {
     internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext, mime: mimeFor(f, "video"), adaptive: true });
   }
-  for (const f of formats.filter(isAdaptiveAudio)) {
+  for (const f of audioCandidates) {
     internal.set(String(f.format_id), { url: f.url, headers: cleanHeaders(f.http_headers), ext: f.ext, mime: mimeFor(f, "audio"), adaptive: true });
   }
   const captions = collectCaptions(info);
@@ -698,6 +712,6 @@ async function status() {
 module.exports = {
   YtdlpError, ID_RE, CHANNEL_RE, PLAYLIST_RE,
   search, related, channel, playlist, channelImageUrl, uploadDates, DATE_BATCH, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
-  _channelImagePath: channelImagePath, _CHANNEL_IMG_RE: CHANNEL_IMG_RE, _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry,
+  _channelImagePath: channelImagePath, _CHANNEL_IMG_RE: CHANNEL_IMG_RE, _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry, _originalLanguageOnly: originalLanguageOnly,
   _clearCaches: () => { searchMemo.clear(); relatedMemo.clear(); videoMemo.clear(); statusMemo.clear(); channelMemo.clear(); playlistMemo.clear(); },
 };
