@@ -115,7 +115,9 @@ test("channel art: avatar resized, banner chosen, foreign hosts dropped", () => 
     { id: "avatar_uncropped", url: "https://yt3.googleusercontent.com/AVATARBASE=s0" },
   ];
   const art = yt._pickChannelArt(thumbs);
-  assert.equal(art.avatar, "https://yt3.googleusercontent.com/AVATARBASE=s96-c-k-c0x00ffffff-no-rj");
+  // The real URL Google gave us for the avatar, unmodified -- never one reconstructed by hand
+  // (an earlier version rewrote the size suffix itself, which some CDN edges rejected).
+  assert.equal(art.avatar, "https://yt3.googleusercontent.com/AVATARBASE=s0");
   assert.match(art.banner, /BANNERBASE=w1707-/);
   assert.deepEqual(yt._pickChannelArt([{ id: "avatar_uncropped", url: "https://evil.example/x=s0" }]), { avatar: null, banner: null });
   assert.deepEqual(yt._pickChannelArt([{ id: "avatar_uncropped", url: "https://yt3.googleusercontent.com/x/../y=s0" }]), { avatar: null, banner: null });

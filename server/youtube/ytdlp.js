@@ -250,12 +250,15 @@ const CHANNEL_IMG_RE = /^https:\/\/(yt3\.googleusercontent\.com|yt3\.ggpht\.com)
 // banner variant closest to 1700px wide. Either may be null.
 function pickChannelArt(thumbnails) {
   const list = Array.isArray(thumbnails) ? thumbnails.filter((t) => t && CHANNEL_IMG_RE.test(t.url || "")) : [];
+  // Always use a URL Google actually generated for us, never one reconstructed by hand: an
+  // earlier version rewrote the avatar's own size suffix into a guessed one, which worked from
+  // some networks but not others -- likely rejected by some CDN edges as an unrecognised
+  // parameter combination. `avatar_uncropped` (or the 900x900 variant, same image) is used as-is.
   const avatarSrc = list.find((t) => t.id === "avatar_uncropped") || list.find((t) => t.width && t.width === t.height);
-  const base = avatarSrc && avatarSrc.url.split("=")[0];
   const banners = list.filter((t) => t.width && t.height && t.width / t.height > 3);
   banners.sort((a, b) => Math.abs(a.width - 1707) - Math.abs(b.width - 1707));
   return {
-    avatar: base ? `${base}=s96-c-k-c0x00ffffff-no-rj` : null,
+    avatar: avatarSrc ? avatarSrc.url : null,
     banner: banners[0] ? banners[0].url : null,
   };
 }
