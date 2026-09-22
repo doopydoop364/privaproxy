@@ -1212,6 +1212,7 @@
     current.qlist = [];
     current.option = null;
     current.segments = [];
+    current.skipped = new Set(); // kept in step with current.segments; play() also resets both
     setMessage("");
     setBuffering(false);
     fillQuality([]);

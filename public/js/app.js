@@ -295,11 +295,21 @@ function readSavedTabs() {
   try {
     const data = JSON.parse(localStorage.getItem(TABS_KEY) || "null");
     if (!data || !Array.isArray(data.tabs)) return null;
-    const list = data.tabs
-      .filter((t) => t && typeof t.url === "string" && (t.engine === "uv" || t.engine === "scramjet"))
-      .slice(0, TABS_MAX);
-    if (!list.length) return null;
-    return { tabs: list, activeIndex: Number.isInteger(data.activeIndex) ? data.activeIndex : -1 };
+    const rawActiveIndex = Number.isInteger(data.activeIndex) ? data.activeIndex : -1;
+    // Track the active tab's position THROUGH the filter below: our own writes never
+    // produce an invalid entry, but a future schema change or a tampered/corrupted
+    // value could, and dropping one would otherwise shift every later index without
+    // shifting activeIndex to match, pointing it at the wrong (or no) restored tab.
+    let activeIndex = -1;
+    const list = [];
+    data.tabs.forEach((t, i) => {
+      if (!t || typeof t.url !== "string" || (t.engine !== "uv" && t.engine !== "scramjet")) return;
+      if (i === rawActiveIndex) activeIndex = list.length;
+      list.push(t);
+    });
+    const tabs = list.slice(0, TABS_MAX);
+    if (!tabs.length) return null;
+    return { tabs, activeIndex: activeIndex < tabs.length ? activeIndex : -1 };
   } catch {
     return null;
   }
@@ -321,15 +331,12 @@ async function restoreTabs() {
   // from the dropdown itself doesn't block on it.
   if (saved.tabs.some((t) => t.engine === "scramjet")) await scramjetReady;
 
-  const originalEngine = enginePicker.value;
   const restored = saved.tabs.map((t) => {
     // Scramjet failed to set up since this was saved: fall back to Ultraviolet
     // rather than lose the tab.
     const engine = t.engine === "scramjet" && scramjetOption.disabled ? "uv" : t.engine;
-    enginePicker.value = engine;
-    return createTab(t.url);
+    return createTab(t.url, engine);
   });
-  enginePicker.value = originalEngine;
 
   const active = restored[saved.activeIndex];
   if (active) setActiveTab(active.id);
@@ -342,9 +349,9 @@ function applyDecodedUrl(tab, decoded) {
   loadFavicon(tab, decoded); // fire-and-forget; updates the pill once it resolves
 }
 
-function createTab(initialTarget) {
+function createTab(initialTarget, engine) {
   const id = `tab-${++tabCounter}`;
-  const engine = enginePicker.value; // "uv" or "scramjet" -- fixed for this tab's life
+  engine = engine || enginePicker.value; // "uv" or "scramjet" -- fixed for this tab's life
 
   const tabEl = document.createElement("div");
   tabEl.className = "browser-tab tab-enter"; // starts hidden, animates in below
@@ -493,7 +500,15 @@ function reloadTab(tab) {
       // re-assigning iframeEl.src to the same string, this reliably reloads.
       tab.iframeEl.contentWindow.location.reload();
     } catch {
-      tab.iframeEl.src = __uv$config.prefix + __uv$config.encodeUrl(tab.realUrl);
+      // contentWindow was somehow inaccessible: re-assigning src to the SAME
+      // encoded URL string is a no-op in most browsers (no navigation, no
+      // 'load' event), which would leave setTabLoading(true) above stuck
+      // forever. Force an actual navigation via a real URL change first.
+      tab.iframeEl.src = "about:blank";
+      setTimeout(() => {
+        setTabLoading(tab, true); // the about:blank load already cleared it
+        tab.iframeEl.src = __uv$config.prefix + __uv$config.encodeUrl(tab.realUrl);
+      }, 0);
     }
   }
 }
@@ -564,6 +579,11 @@ function navigateTab(id, rawTarget) {
 
   tab.tabEl.querySelector(".browser-tab-title").textContent = hostnameOf(target);
   setTabFavicon(tab, DEFAULT_FAVICON);
+  // Set before setTabLoading()/pushHistory() below (both can call updateNavButtons(),
+  // which reads tab.realUrl to decide whether Reload/Stop is enabled): a brand-new
+  // tab's realUrl is still null at this point otherwise, so the very first
+  // navigation would show a Stop button the person can't actually click.
+  tab.realUrl = target; // optimistic; corrected once the navigation actually resolves
   setTabLoading(tab, true);
 
   if (tab.engine === "scramjet") {
@@ -572,7 +592,6 @@ function navigateTab(id, rawTarget) {
     tab.iframeEl.src = __uv$config.prefix + __uv$config.encodeUrl(target);
     pushHistory(tab, target);
   }
-  tab.realUrl = target; // optimistic; corrected once the navigation actually resolves
 
   if (tab.id === activeTabId) {
     urlInput.value = target;

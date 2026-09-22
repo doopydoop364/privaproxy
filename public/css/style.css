@@ -168,6 +168,10 @@ button {
 /* A ring around the favicon while the tab is loading, like a browser's tab spinner --
    no extra markup, just a border animated on the existing favicon image. */
 .browser-tab.is-loading .browser-tab-favicon {
+  /* Under the page's global box-sizing: border-box, a border here would eat into
+     the 14x14 box instead of surrounding it, visibly shrinking the favicon
+     bitmap itself for as long as the tab is loading. */
+  box-sizing: content-box;
   border-radius: 50%;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
