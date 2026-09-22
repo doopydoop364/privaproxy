@@ -1254,7 +1254,14 @@
   }
 
   function applyCaption() {
-    video.querySelectorAll("track").forEach((t) => t.remove());
+    video.querySelectorAll("track").forEach((t) => {
+      // Disable before removing: some browsers keep rendering the last active
+      // cue on screen until something else repaints the text-track layer (we
+      // saw it linger until the next quality change, which reloads the video),
+      // if the <track> is just removed without first telling it to stop.
+      if (t.track) t.track.mode = "disabled";
+      t.remove();
+    });
     const lang = captionSel.value;
     if (!current.entry || !lang || lang === "off") return;
     const track = el("track");
@@ -1286,6 +1293,13 @@
       for (const cue of track.cues ? Array.from(track.cues) : []) {
         cue.snapToLines = true;
         cue.line = line;
+        // Pin these explicitly rather than leaving them at their nominal "auto"
+        // defaults: some engines drift a cue's horizontal position (seen as
+        // captions stuck along one edge) once .line is touched at all, unless
+        // align/position/size are set alongside it.
+        cue.align = "center";
+        cue.position = "auto";
+        cue.size = 100;
       }
     }
   }

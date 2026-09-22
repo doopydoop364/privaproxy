@@ -388,6 +388,32 @@ test("caption style and position are applied to cues, and saved styles are valid
   video.textTracks = [{ cues }];
   track.dispatch("load");
   assert.deepEqual(cues.map((c) => [c.line, c.snapToLines]), [[0, true], [0, true]]);
+  // horizontal layout is pinned explicitly on every cue too -- some browsers drift a
+  // cue off-center once .line is touched at all, unless align/position/size are set
+  // alongside it (this is what was behind captions sticking to one side of the screen)
+  assert.deepEqual(cues.map((c) => [c.align, c.position, c.size]), [
+    ["center", "auto", 100],
+    ["center", "auto", 100],
+  ]);
+});
+
+test("turning captions off disables the old track before removing it", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  const video = env.byId.get("ytVideo");
+  const sel = env.byId.get("ytCaptions");
+  sel.value = "en";
+  sel.dispatch("change");
+  const track = video.querySelectorAll("track")[0].track;
+  assert.equal(track.mode, "showing");
+
+  sel.value = "off";
+  sel.dispatch("change");
+  // Just removing the element isn't enough: some browsers keep the last active cue
+  // painted on screen until something else repaints the text-track layer (we saw it
+  // linger until the next quality change). Disabling it first forces an immediate clear.
+  assert.equal(track.mode, "disabled");
+  assert.equal(video.querySelectorAll("track").length, 0);
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
