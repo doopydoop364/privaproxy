@@ -342,6 +342,19 @@ button {
   overflow-y: auto;
   gap: 16px;
 }
+
+/* Playing a video scrolls this view down to bring the player into view (see
+   playerWrap.scrollIntoView() in youtube.js), which would otherwise carry the
+   search bar off the top of this view's own scroll area -- it's still there,
+   just scrolled out of sight, with nothing to suggest scrolling back up.
+   Pinning it removes that dead end: searching (or pasting a link) always works,
+   video playing or not. */
+#ytSearchForm {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+}
 #view-youtube > * { flex-shrink: 0; }
 #view-youtube [hidden] { display: none !important; }
 
