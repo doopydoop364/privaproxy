@@ -7,6 +7,7 @@ const { PassThrough } = require("stream");
 const { EventEmitter } = require("events");
 const hls = require("../server/youtube/hls");
 const upstream = require("../server/youtube/hlsUpstream");
+const thumbnail = require("../server/youtube/thumbnail");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -102,4 +103,43 @@ test("HLS times out connections stalled before a socket is available", async () 
   const rejected = assert.rejects(pending, /timed out/);
   expire();
   await rejected;
+});
+
+test("thumbnail fetch uses a fixed host, rejects private DNS, and caps response size", async () => {
+  const savedGet = https.get, savedLookup = dns.lookup;
+  let address = "142.250.1.1", calls = 0, bytes = "image", type = "image/jpeg";
+  dns.lookup = (_host, _options, callback) => callback(null, [{ address, family: 4 }]);
+  https.get = (url, options, callback) => {
+    calls++;
+    assert.equal(url.hostname, "i.ytimg.com");
+    const req = new EventEmitter();
+    req.setTimeout = () => req;
+    req.destroy = err => req.emit("error", err);
+    queueMicrotask(() => options.lookup(url.hostname, { all: true }, err => {
+      if (err) return req.emit("error", err);
+      const res = new PassThrough();
+      res.statusCode = 200;
+      res.headers = { "content-type": type, "content-length": String(bytes.length) };
+      callback(res);
+      res.end(bytes);
+    }));
+    return req;
+  };
+  try {
+    assert.equal(await thumbnail.fetchThumbnail("invalid", "mqdefault"), null);
+    assert.equal(await thumbnail.fetchThumbnail("aaaaaaaaaaa", "bad"), null);
+    assert.equal(calls, 0);
+    assert.equal((await thumbnail.fetchThumbnail("aaaaaaaaaaa", "mqdefault")).body.toString(), "image");
+    address = "127.0.0.1";
+    await assert.rejects(thumbnail.fetchThumbnail("aaaaaaaaaaa", "mqdefault"));
+    address = "142.250.1.1";
+    type = "text/html";
+    await assert.rejects(thumbnail.fetchThumbnail("aaaaaaaaaaa", "mqdefault"), /not an image/);
+    type = "image/jpeg";
+    bytes = "x".repeat(2 * 1024 * 1024 + 1);
+    await assert.rejects(thumbnail.fetchThumbnail("aaaaaaaaaaa", "mqdefault"), /too large/);
+  } finally {
+    https.get = savedGet;
+    dns.lookup = savedLookup;
+  }
 });

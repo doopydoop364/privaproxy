@@ -5,21 +5,28 @@ const cors = require("cors");
 
 const proxyRegistry = require("./proxies/registry");
 const youtubeRoutes = require("./youtube/routes");
+const auth = require("./auth").createAuth();
+auth.setBareEndpoints(proxyRegistry.listWithStatus().map((entry) => entry.bareEndpoint));
 
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors());
+auth.mount(app);
+if (!auth.enabled) app.use(cors());
 
 // --- API routes ---
-app.get("/api/proxies", (_req, res) => {
-  res.json(proxyRegistry.listWithStatus());
+app.get("/api/auth/status", (_req, res) => res.json({ enabled: auth.enabled }));
+app.get("/api/proxies", (req, res) => {
+  if (auth.enabled) res.set("Cache-Control", "no-store");
+  res.json(proxyRegistry.listWithStatus().map((entry) => auth.enabled ? {
+    ...entry, bareEndpoint: auth.bareEndpoint(req, entry.bareEndpoint),
+  } : entry));
 });
 
 app.use("/api/youtube", youtubeRoutes);
 
 // --- Proxy providers (Ultraviolet etc.) mount themselves here ---
-proxyRegistry.mountAll(app, server);
+proxyRegistry.mountAll(app, server, auth);
 
 // --- hls.js (adaptive YouTube playback), served from node_modules ---
 // Joined path, not require.resolve: the package's "exports" map doesn't expose dist/.
@@ -38,5 +45,5 @@ server.listen(PORT, HOST, () => {
   // this has to start after we're actually listening.
   const loopback = address.family === "IPv6" ? "[::1]" : "127.0.0.1";
   const checkHost = address.address === "0.0.0.0" || address.address === "::" ? loopback : host;
-  proxyRegistry.startLatencyChecks(`http://${checkHost}:${address.port}`);
+  proxyRegistry.startLatencyChecks(`http://${checkHost}:${address.port}`, auth);
 });

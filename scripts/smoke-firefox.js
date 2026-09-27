@@ -13,7 +13,7 @@ const registry = require("../server/proxies/registry");
 
 const A = "aaaaaaaaaaa", B = "bbbbbbbbbbb";
 const CH = "UC" + "a".repeat(22), OTHER = "UC" + "b".repeat(22);
-const item = id => ({ id, title: id, author: "Fixture", duration: 60, uploadedAt: 1700000000, thumbnail: "" });
+const item = id => ({ id, title: id, author: "Fixture", duration: 60, uploadedAt: 1700000000, thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` });
 let rawNavigations = 0;
 let failScramjet = false;
 let adaptiveFixture = false;
@@ -26,6 +26,7 @@ app.get("/api/proxies", (_req, res) => {
   res.json([{ id: "bare-primary", name: "Primary", bareEndpoint: "/bare/", online: true }]);
 });
 app.get("/api/youtube/status", (_req, res) => res.json({ ok: true }));
+app.get("/api/youtube/thumbnail/:id/:size.jpg", (_req, res) => res.type("png").send(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64")));
 app.get("/api/youtube/playlist/:id", (_req, res) => res.json({ playlist: { title: "Fixture" }, results: [item(A), item(B)], hasMore: false }));
 app.get("/api/youtube/video/:id", (req, res) => res.json({ ...item(req.params.id), streams: [{ formatId: "18", height: 360, label: "360p", ext: "mp4" }], captions: [], adaptive: adaptiveFixture ? {
   video: [{ formatId: "137", height: 1080, mime: "video/mp4", vcodec: "avc1.640028" }],
@@ -125,14 +126,22 @@ async function main() {
     await wait("JSON.parse(localStorage.getItem('browserTabs')).tabs[0].url === 'https://two.example/'");
     await navigate(origin + "/");
     await wait("document.querySelector('#urlInput').value === 'https://two.example/' && document.querySelector('.browser-frame')?.contentDocument?.title === 'Fixture page'");
+    assert.equal(await evaluate("return document.querySelector('#forwardBtn').disabled;"), false, "forward history was lost on reload");
+    await evaluate("document.querySelector('#forwardBtn').click(); return true;");
+    await wait("document.querySelector('#urlInput').value === 'https://three.example/'");
+    await evaluate("document.querySelector('.browser-tab.is-active .browser-tab-close').click(); return true;");
+    await wait("!document.querySelector('#reopenTabBtn').disabled");
+    await evaluate("document.querySelector('#reopenTabBtn').click(); return true;");
+    await wait("document.querySelector('#urlInput').value === 'https://three.example/' && !document.querySelector('#backBtn').disabled");
+    console.log("PASS: Firefox restores forward history and reopens a closed tab with its history.");
     await evaluate("document.querySelector('#urlInput').value='https://three.example/'; document.querySelector('#browseForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
     await wait("!document.querySelector('#backBtn').disabled");
     await evaluate("document.querySelector('#backBtn').click(); document.querySelector('#forwardBtn').click(); return true;");
     await wait("JSON.parse(localStorage.getItem('browserTabs')).tabs[0].url === 'https://three.example/'");
     console.log("PASS: Back/Forward saves the current URL and browser reload restores it.");
 
-    await wait("__uv$config.decodeUrl(document.querySelector('.browser-frame').contentWindow.location.pathname.slice(__uv$config.prefix.length)) === 'https://three.example/' && !document.querySelector('#reloadBtn').title.includes('Stop')");
-    await evaluate("document.querySelector('.browser-frame').contentWindow.location.hash='section'; return true;");
+    await wait("__uv$config.decodeUrl(document.querySelector('.browser-frame:not([hidden])').contentWindow.location.pathname.slice(__uv$config.prefix.length)) === 'https://three.example/' && !document.querySelector('#reloadBtn').title.includes('Stop')");
+    await evaluate("document.querySelector('.browser-frame:not([hidden])').contentWindow.location.hash='section'; return true;");
     await wait("document.querySelector('#urlInput').value === 'https://three.example/#section' && JSON.parse(localStorage.getItem('browserTabs')).tabs[0].url.endsWith('#section')");
     console.log("PASS: in-page fragment navigation updates the address bar and saved tab.");
 
@@ -141,11 +150,20 @@ async function main() {
     await evaluate("document.querySelector('.yt-chip-remove').click(); return true;");
     await wait("document.querySelector('.yt-feed[data-feed=\"subs\"] .yt-card') && document.querySelectorAll('.yt-chip').length === 1");
     console.log("PASS: unsubscribing reloads the visible subscription feed.");
+    await evaluate("document.querySelector('.tab[data-view=\"status\"]').click(); return true;");
+    await wait("document.querySelector('#statusBackends').textContent.includes('Primary') && document.querySelector('#statusYoutube').textContent.includes('yt-dlp')");
+    console.log("PASS: status view displays live service checks.");
+    await evaluate("document.querySelector('.tab[data-view=\"youtube\"]').click(); return true;");
 
     if (process.argv[3]) {
       await evaluate("document.querySelector('#ytSearchInput').value='https://www.youtube.com/playlist?list=PLabcdefghij'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
       await wait("document.querySelectorAll('.yt-feed[data-feed=\"playlist\"] .yt-card').length === 2");
+      assert.equal(await evaluate("return document.querySelector('.yt-feed[data-feed=\"playlist\"] .yt-card img')?.src.startsWith(location.origin + '/api/youtube/thumbnail/');"), true);
       await evaluate("const cards=document.querySelectorAll('.yt-feed[data-feed=\"playlist\"] .yt-card'); cards[1].querySelector('.yt-card-queue').click(); cards[0].querySelector('.yt-card-main').click(); document.querySelector('#ytVideo').muted=true; return true;");
+      await wait("!document.querySelector('#ytSaveVideo').hidden");
+      await evaluate("document.querySelector('#ytSaveVideo').click(); document.querySelector('[data-feed=\"saved\"]').click(); return true;");
+      await wait("document.querySelector('.yt-feed[data-feed=\"saved\"] .yt-card')");
+      console.log("PASS: thumbnails stay on the local origin and Watch Later saves videos.");
       await wait("document.querySelector('#ytVideo').readyState >= 2");
       await evaluate("const video=document.querySelector('#ytVideo'); video.currentTime=video.duration-0.15; await video.play(); return true;");
       await wait(`document.querySelector('#ytVideo').getAttribute('src')?.includes('/${B}?') && document.querySelector('#ytVideo').currentTime >= 35`);
@@ -160,7 +178,7 @@ async function main() {
       await evaluate("document.querySelector('#ytClose').click(); document.querySelector('#ytSearchInput').value='https://youtu.be/aaaaaaaaaaa'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
       await wait("document.querySelector('#ytQuality').value === 'a:137' && document.querySelector('#ytVideo').readyState >= 2 && window.fixtureAudio.readyState >= 2");
       await evaluate("const video=document.querySelector('#ytVideo'); video.muted=true; video.loop=true; video.currentTime=video.duration-0.15; await video.play(); return true;");
-      await wait("document.querySelector('#ytVideo').currentTime < 3 && !document.querySelector('#ytVideo').paused");
+      await wait("document.querySelector('#ytVideo').currentTime < 3 && !document.querySelector('#ytVideo').paused && !window.fixtureAudio.paused");
       assert.equal(await evaluate("return window.fixtureAudio.paused;"), false, "looped video left its separate audio paused");
       console.log("PASS: real adaptive playback keeps its audio playing across a loop.");
     }

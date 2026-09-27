@@ -60,10 +60,16 @@
     return plural(Math.max(1, Math.floor(sec / 31557600)), "year"); // 365 days old already counts as 1 year
   }
 
-  // Image URLs we'll put in an <img>: YouTube's thumbnail host, and our own channel-image route
-  // (which fetches avatars/banners server-side, so the browser never contacts Google for them).
-  const IMAGE_RE = /^(https:\/\/i\.ytimg\.com\/|\/api\/youtube\/channel-image\/UC[A-Za-z0-9_-]{22}\/(avatar|banner)$)/;
-  const safeImageUrl = (url) => (IMAGE_RE.test(url || "") ? url : "");
+  const THUMB_RE = /^\/api\/youtube\/thumbnail\/([A-Za-z0-9_-]{11})\/(mqdefault|hqdefault|maxresdefault)\.jpg$/;
+  const OLD_THUMB_RE = /^https:\/\/i\.ytimg\.com\/vi\/([A-Za-z0-9_-]{11})\/(mqdefault|hqdefault|maxresdefault)\.jpg$/;
+  const CHANNEL_IMAGE_RE = /^\/api\/youtube\/channel-image\/UC[A-Za-z0-9_-]{22}\/(avatar|banner)$/;
+  const thumbnailPath = (id, size = "mqdefault") => VIDEO_ID_RE.test(id || "") && ["mqdefault", "hqdefault", "maxresdefault"].includes(size)
+    ? `/api/youtube/thumbnail/${id}/${size}.jpg` : "";
+  const safeImageUrl = (url) => {
+    if (THUMB_RE.test(url || "") || CHANNEL_IMAGE_RE.test(url || "")) return url;
+    const old = OLD_THUMB_RE.exec(url || "");
+    return old ? thumbnailPath(old[1], old[2]) : "";
+  };
   const channelImagePath = (id, kind) => (CHANNEL_ID_RE.test(id || "") ? `/api/youtube/channel-image/${id}/${kind}` : "");
 
   // ---------- subtitle appearance ----------
@@ -261,12 +267,29 @@
         id: x.id,
         title: x.title.slice(0, 200),
         author: typeof x.author === "string" ? x.author.slice(0, 100) : "",
-        thumbnail: /^https:\/\/i\.ytimg\.com\//.test(x.thumbnail || "") ? x.thumbnail : "",
+        thumbnail: safeImageUrl(x.thumbnail),
         duration: Number.isFinite(x.duration) ? x.duration : null,
       });
     }
     const seen = new Set();
     return [...(existing || []), ...clean].filter((h) => (seen.has(h.id) ? false : seen.add(h.id))).slice(0, max);
+  }
+
+  function normalizeSavedLists(raw) {
+    const entries = Array.isArray(raw) ? raw : [];
+    const seen = new Set();
+    const lists = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry.id !== "string" ||
+          !/^(watch-later|list-[A-Za-z0-9_-]{8,32})$/.test(entry.id) || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const name = entry.id === "watch-later" ? "Watch Later" : String(entry.name || "").trim().slice(0, 60);
+      if (!name) continue;
+      lists.push({ id: entry.id, name, items: mergeHistory([], entry.items, 200) });
+      if (lists.length >= 20) break;
+    }
+    if (!seen.has("watch-later")) lists.unshift({ id: "watch-later", name: "Watch Later", items: [] });
+    return lists.slice(0, 20);
   }
 
   // ---------- Home feed ordering ----------
@@ -336,7 +359,7 @@
   }
 
   return {
-    fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl, channelImagePath,
+    fmtTime, fmtViews, fmtCompact, fmtSubscribers, timeAgo, safeImageUrl, thumbnailPath, channelImagePath, normalizeSavedLists,
     CAPTION_CHOICES, DEFAULT_CAPTION_STYLE, normalizeCaptionStyle, captionDeclarations, captionCss, cueLine,
     HOME_ALGORITHMS, balancedInterleave, diversify, applyHomeAlgorithm,
     parseYoutubeInput,

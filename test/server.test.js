@@ -46,6 +46,7 @@ const fixture = {
 test("buildVideo separates combined, adaptive video/audio and captions", () => {
   const v = yt._buildVideo(fixture, "");
   assert.equal(v.pub.channelId, "UC4QobU6STFB0P71PMvOGN5A");
+  assert.equal(v.pub.thumbnail, "/api/youtube/thumbnail/jNQXAC9IVRw/mqdefault.jpg");
   assert.deepEqual(v.pub.streams.map((s) => s.formatId), ["18"]);
   assert.deepEqual(v.pub.adaptive.video.map((x) => [x.formatId, x.height, x.mime]), [["137", 1080, "video/mp4"]]);
   assert.deepEqual(v.pub.adaptive.audio.map((x) => [x.formatId, x.mime]), [["140", "audio/mp4"]]); // -drc and HLS excluded

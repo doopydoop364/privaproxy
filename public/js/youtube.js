@@ -12,6 +12,7 @@
   const feedTabs = $("ytFeedTabs");
   const feedsEl = $("ytFeeds");
   const clearHistoryBtn = $("ytClearHistory");
+  const saveVideoBtn = $("ytSaveVideo");
   const homeAlgoSel = $("ytHomeAlgo");
   const playerWrap = $("ytPlayerWrap");
   const player = $("ytPlayer");
@@ -24,6 +25,7 @@
   const muteBtn = $("ytMuteBtn");
   const volume = $("ytVolume");
   const timeEl = $("ytTime");
+  const goLiveBtn = $("ytGoLive");
   const speedSel = $("ytSpeed");
   const qualitySel = $("ytQuality");
   const fsBtn = $("ytFullscreen");
@@ -82,7 +84,7 @@
     },
   };
 
-  const safeThumb = safeImageUrl; // thumbnails and channel art: only YouTube's own image hosts
+  const safeThumb = safeImageUrl; // local thumbnail and channel-image routes only
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -379,6 +381,7 @@
     if (name === "home") ensureHome();
     if (name === "subs") ensureSubs();
     if (name === "history") ensureHistory();
+    if (name === "saved") ensureSaved();
     if (name === "related" && feeds.related.stale) startRelated();
     clearHistoryBtn.hidden = !(name === "home" && readHistory().length);
     homeAlgoSel.hidden = name !== "home";
@@ -639,6 +642,137 @@
     });
   }
 
+  // ---------- Watch Later and local playlists ----------
+
+  const SAVED_KEY = "ytSavedLists";
+  const { normalizeSavedLists } = window.YtPure;
+  let selectedListId = "watch-later";
+  const readSavedLists = () => normalizeSavedLists(store.get(SAVED_KEY, []));
+
+  function saveLists(lists) {
+    store.set(SAVED_KEY, normalizeSavedLists(lists));
+    if (!readSavedLists().some(list => list.id === selectedListId)) selectedListId = "watch-later";
+    updateSaveVideoButton();
+    if (activeFeed === "saved") ensureSaved();
+  }
+
+  function updateSaveVideoButton() {
+    const list = readSavedLists().find(item => item.id === selectedListId) || readSavedLists()[0];
+    saveVideoBtn.textContent = `Save to ${list.name}`;
+    saveVideoBtn.hidden = !current.entry;
+  }
+
+  function addToSaved(item, listId = selectedListId) {
+    if (!item || !/^[A-Za-z0-9_-]{11}$/.test(item.id || "")) return;
+    const lists = readSavedLists();
+    const list = lists.find(entry => entry.id === listId);
+    if (!list) return;
+    list.items = [item, ...list.items.filter(entry => entry.id !== item.id)].slice(0, 200);
+    saveLists(lists);
+  }
+
+  function ensureSaved() {
+    const feed = feeds.saved;
+    const lists = readSavedLists();
+    const list = lists.find(entry => entry.id === selectedListId) || lists[0];
+    selectedListId = list.id;
+    updateSaveVideoButton();
+    const selector = el("select", "yt-select");
+    selector.setAttribute("aria-label", "Saved playlist");
+    for (const entry of lists) {
+      const option = el("option", "", entry.name);
+      option.value = entry.id;
+      selector.appendChild(option);
+    }
+    selector.value = selectedListId;
+    selector.addEventListener("change", () => { selectedListId = selector.value; ensureSaved(); });
+
+    const name = el("input", "yt-list-name");
+    name.type = "text";
+    name.maxLength = 60;
+    name.placeholder = "Playlist name";
+    name.setAttribute("aria-label", "Playlist name");
+    const create = el("button", "yt-action-btn", "Create");
+    create.type = "button";
+    create.addEventListener("click", () => {
+      const title = name.value.trim().slice(0, 60);
+      if (!title || lists.length >= 20) return;
+      const id = `list-${Math.random().toString(36).slice(2, 14).padEnd(8, "0")}`;
+      selectedListId = id;
+      saveLists([...lists, { id, name: title, items: [] }]);
+    });
+    const rename = el("button", "yt-action-btn", "Rename");
+    rename.type = "button";
+    rename.hidden = list.id === "watch-later";
+    rename.addEventListener("click", () => {
+      const title = name.value.trim().slice(0, 60);
+      if (!title) return;
+      list.name = title;
+      saveLists(lists);
+    });
+    const remove = el("button", "yt-action-btn", "Delete list");
+    remove.type = "button";
+    remove.hidden = list.id === "watch-later";
+    remove.addEventListener("click", () => {
+      selectedListId = "watch-later";
+      saveLists(lists.filter(entry => entry.id !== list.id));
+    });
+    const playAll = el("button", "yt-action-btn", "Play all");
+    playAll.type = "button";
+    playAll.disabled = !list.items.length;
+    playAll.addEventListener("click", () => {
+      const [first, ...rest] = list.items;
+      if (!first) return;
+      queue.length = 0;
+      for (const item of rest) addToQueue(item);
+      renderQueue();
+      play(first);
+    });
+    const exportBtn = el("button", "yt-action-btn", "Export JSON");
+    exportBtn.type = "button";
+    exportBtn.addEventListener("click", () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(readSavedLists(), null, 2)], { type: "application/json" }));
+      const a = el("a");
+      a.href = url;
+      a.download = "privaproxy-saved-lists.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    const importBtn = el("button", "yt-action-btn", "Import JSON");
+    importBtn.type = "button";
+    const file = el("input");
+    file.type = "file";
+    file.accept = "application/json,.json";
+    file.hidden = true;
+    importBtn.addEventListener("click", () => file.click());
+    file.addEventListener("change", async () => {
+      const source = file.files && file.files[0];
+      file.value = "";
+      if (!source || source.size > 2 * 1024 * 1024) return;
+      try {
+        const raw = JSON.parse(await source.text());
+        if (!Array.isArray(raw)) throw new Error("Invalid lists export.");
+        const incoming = normalizeSavedLists(raw);
+        const merged = readSavedLists();
+        for (const entry of incoming) {
+          const hit = merged.find(existing => existing.id === entry.id);
+          if (hit) hit.items = window.YtPure.mergeHistory(entry.items, hit.items, 200);
+          else if (merged.length < 20) merged.push(entry);
+        }
+        saveLists(merged);
+      } catch {
+        setStatus(feed, "That file isn't a valid saved-lists export.", { error: true });
+      }
+    });
+    feed.head.replaceChildren(el("h3", "yt-feed-title", "Saved videos"), selector, name, create, rename, remove, playAll, exportBtn, importBtn, file);
+    resetFeed(feed, { fetchPage: async () => ({ results: list.items, hasMore: false }), emptyText: "No videos in this list yet." });
+  }
+
+  saveVideoBtn.addEventListener("click", () => {
+    addToSaved(current.entry);
+    saveVideoBtn.textContent = "Saved ✓";
+  });
+
   // ---------- search ----------
 
   form.addEventListener("submit", (e) => {
@@ -778,6 +912,29 @@
     });
 
     card.append(main, add);
+    if (feed && feed.name !== "saved") {
+      const save = el("button", "yt-card-save", "☆");
+      save.type = "button";
+      save.title = "Save to Watch Later";
+      save.setAttribute("aria-label", "Save to Watch Later");
+      save.addEventListener("click", () => {
+        addToSaved(item, "watch-later");
+        save.textContent = "★";
+      });
+      card.appendChild(save);
+    }
+    if (feed && feed.name === "saved") {
+      const rm = el("button", "yt-card-save", "×");
+      rm.type = "button";
+      rm.title = "Remove from saved list";
+      rm.setAttribute("aria-label", "Remove from saved list");
+      rm.addEventListener("click", () => {
+        const lists = readSavedLists();
+        const list = lists.find(entry => entry.id === selectedListId);
+        if (list) { list.items = list.items.filter(entry => entry.id !== item.id); saveLists(lists); }
+      });
+      card.appendChild(rm);
+    }
     if (feed && feed.name === "history") {
       const rm = el("button", "yt-card-queue yt-card-remove", "×");
       rm.type = "button";
@@ -812,8 +969,46 @@
   let hls = null; // active hls.js instance (adaptive playback), if any
   let hlsNetRetries = 0;
   let hlsMediaRecoveries = 0;
+  const mediaSession = typeof navigator !== "undefined" && navigator.mediaSession;
+
+  function updateMediaMetadata() {
+    if (!mediaSession || typeof MediaMetadata === "undefined") return;
+    const entry = current.entry;
+    mediaSession.metadata = entry ? new MediaMetadata({
+      title: entry.title || current.info?.title || "Video",
+      artist: entry.author || current.info?.author || "",
+      artwork: [{ src: safeThumb(entry.thumbnail) || window.YtPure.thumbnailPath(entry.id), sizes: "320x180", type: "image/jpeg" }],
+    }) : null;
+  }
+
+  function updateMediaState() {
+    if (!mediaSession) return;
+    mediaSession.playbackState = !current.entry ? "none" : video.paused ? "paused" : "playing";
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : current.info?.duration;
+    if (current.entry && Number.isFinite(duration) && duration > 0 && typeof mediaSession.setPositionState === "function") {
+      try {
+        mediaSession.setPositionState({ duration, position: Math.min(duration, Math.max(0, video.currentTime || 0)), playbackRate: video.playbackRate || 1 });
+      } catch { /* browser may not support position tracking */ }
+    } else if (typeof mediaSession.setPositionState === "function") {
+      try { mediaSession.setPositionState(); } catch { /* unsupported */ }
+    }
+  }
+
+  if (mediaSession) {
+    for (const [action, handler] of Object.entries({
+      play: () => { if (current.entry) video.play().catch(() => {}); },
+      pause: () => { if (current.entry) video.pause(); },
+      seekbackward: event => { if (current.entry) seekBy(-(event.seekOffset || 10)); },
+      seekforward: event => { if (current.entry) seekBy(event.seekOffset || 10); },
+      seekto: event => { if (current.entry && Number.isFinite(event.seekTime)) seekBy(event.seekTime - (video.currentTime || 0)); },
+      nexttrack: () => { if (queue.length) playNext(); },
+    })) {
+      try { mediaSession.setActionHandler(action, handler); } catch { /* action unsupported here */ }
+    }
+  }
 
   function setMessage(text) {
+    if (text) window.privaproxyDiagnostics?.record(text);
     playerMsg.textContent = text || "";
     playerMsg.hidden = !text;
   }
@@ -835,6 +1030,9 @@
     videoRequest?.abort();
     const request = videoRequest = new AbortController();
     current.entry = entry;
+    updateSaveVideoButton();
+    updateMediaMetadata();
+    updateMediaState();
     current.info = null;
     current.formatId = null;
     current.qlist = [];
@@ -849,6 +1047,8 @@
     setBuffering(true);
     pendingResume = 0;
     destroyHls();
+    goLiveBtn.hidden = true;
+    seek.disabled = false;
     stopAudio();
     video.pause();
     video.removeAttribute("src");
@@ -873,20 +1073,30 @@
     if (token !== playToken) return;
 
     current.info = info;
+    loopBtn.disabled = !!info.isLive;
     // Playing from a pasted link starts with a placeholder entry; fill it in.
     entry.title = info.title || entry.title;
     entry.author = info.author || entry.author || "";
     entry.thumbnail = entry.thumbnail || info.thumbnail || "";
     if (entry.duration == null) entry.duration = info.duration;
     titleEl.textContent = entry.title;
+    updateMediaMetadata();
+    updateMediaState();
     renderChannel(info, token);
     fillCaptions(info.captions || []);
     loadSponsorSegments(entry.id, token);
 
-    const resumeAt = resumePoint(store.get(RESUME_KEY, {}), entry.id, info.duration);
+    const resumeAt = info.isLive ? 0 : resumePoint(store.get(RESUME_KEY, {}), entry.id, info.duration);
     // Combined files (audio+video in one) and separate video/audio files, best first.
     const qlist = buildQualityList(info, canPlay);
-    if (qlist.length) {
+    if (info.isLive && info.hls) {
+      current.qlist = [];
+      pendingResume = 0;
+      goLiveBtn.hidden = false;
+      setLoop(false);
+      startHls(entry.id);
+      afterPlay(entry);
+    } else if (qlist.length) {
       current.qlist = qlist;
       fillQuality(qlist);
       loadOption(choosePreferred(qlist, store.get(QUALITY_KEY, 1080)), { autoplay: true, resumeAt });
@@ -1050,6 +1260,7 @@
   function startHls(id) {
     const Hls = window.Hls;
     if (!Hls || !Hls.isSupported()) {
+      goLiveBtn.hidden = true;
       setBuffering(false);
       setMessage("This browser can't play adaptive (HLS) streams.");
       return;
@@ -1057,7 +1268,7 @@
     hlsNetRetries = 0;
     hlsMediaRecoveries = 0;
     current.formatId = "hls";
-    const h = new Hls({ maxBufferLength: 30 });
+    const h = new Hls({ maxBufferLength: 30, lowLatencyMode: !!current.info?.isLive });
     hls = h;
 
     h.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -1150,16 +1361,20 @@
     setBuffering(false);
     syncPlayIcon();
     wake();
+    updateMediaState();
   });
   video.addEventListener("waiting", () => setBuffering(true));
   video.addEventListener("canplay", () => setBuffering(false));
   video.addEventListener("seeked", () => setBuffering(false));
   video.addEventListener("play", syncPlayIcon);
+  video.addEventListener("play", updateMediaState);
   video.addEventListener("pause", () => {
     syncPlayIcon();
     wake();
+    updateMediaState();
   });
   video.addEventListener("timeupdate", updateProgress);
+  video.addEventListener("timeupdate", updateMediaState);
   video.addEventListener("progress", updateProgress);
   video.addEventListener("durationchange", updateProgress);
   video.addEventListener("ended", () => {
@@ -1249,6 +1464,8 @@
     saveResume(true);
     playToken++; // any lookup still in flight for the video is now stale
     videoRequest?.abort();
+    goLiveBtn.hidden = true;
+    seek.disabled = false;
     videoRequest = null;
     destroyHls();
     stopAudio();
@@ -1259,6 +1476,9 @@
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     if (document.pictureInPictureElement && document.exitPictureInPicture) document.exitPictureInPicture().catch(() => {});
     current.entry = null;
+    updateSaveVideoButton();
+    updateMediaMetadata();
+    updateMediaState();
     current.info = null;
     current.formatId = null;
     current.qlist = [];
@@ -1460,7 +1680,7 @@
   const RESUME_KEY = "ytResume";
   let lastResumeSave = 0;
   function saveResume(force) {
-    if (!current.entry || !hasMedia()) return;
+    if (!current.entry || !hasMedia() || current.info?.isLive) return;
     const now = Date.now();
     if (!force && now - lastResumeSave < 5000) return;
     lastResumeSave = now;
@@ -1474,6 +1694,7 @@
   // ---------- loop, picture-in-picture, theater mode ----------
 
   function setLoop(on) {
+    on = !!on && !current.info?.isLive;
     video.loop = on;
     loopBtn.classList.toggle("is-on", on);
     loopBtn.setAttribute("aria-pressed", String(on));
@@ -1520,6 +1741,21 @@
 
   function updateProgress() {
     const t = video.currentTime || 0;
+    if (current.info?.isLive && hls) {
+      const bounds = video.seekable;
+      const start = bounds?.length ? bounds.start(0) : 0;
+      const end = bounds?.length ? bounds.end(bounds.length - 1) : 0;
+      const span = Math.max(0, end - start);
+      const pct = span ? Math.max(0, Math.min(100, 100 * (t - start) / span)) : 0;
+      if (!scrubbing) seek.value = Math.round(pct * 10);
+      seek.disabled = !span;
+      seek.style.setProperty("--played", `${pct}%`);
+      const behind = Number.isFinite(hls.liveSyncPosition) ? Math.max(0, hls.liveSyncPosition - t) : Math.max(0, end - t);
+      timeEl.textContent = behind > 5 ? `LIVE · ${fmtTime(behind)} behind` : "LIVE";
+      goLiveBtn.hidden = false;
+      goLiveBtn.disabled = behind <= 5;
+      return;
+    }
     const d = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : (current.info && current.info.duration) || 0;
     const pct = d ? Math.min(100, (t / d) * 100) : 0;
     if (!scrubbing) seek.value = Math.round(pct * 10);
@@ -1546,9 +1782,21 @@
     const d = seekDuration();
     const pct = Number(seek.value) / 10;
     seek.style.setProperty("--played", `${pct}%`);
+    if (current.info?.isLive && hls) {
+      const bounds = video.seekable;
+      if (bounds?.length) timeEl.textContent = `LIVE · ${fmtTime((1 - pct / 100) * (bounds.end(bounds.length - 1) - bounds.start(0)))} behind`;
+      return;
+    }
     timeEl.textContent = `${fmtTime((pct / 100) * d)} / ${fmtTime(d)}`;
   });
   seek.addEventListener("change", () => {
+    if (current.info?.isLive && hls) {
+      const bounds = video.seekable;
+      if (bounds?.length) video.currentTime = bounds.start(0) + Number(seek.value) / 1000 * (bounds.end(bounds.length - 1) - bounds.start(0));
+      scrubbing = false;
+      seek.blur();
+      return;
+    }
     const d = seekDuration();
     if (d) video.currentTime = (Number(seek.value) / 1000) * d;
     scrubbing = false;
@@ -1561,10 +1809,21 @@
   function seekBy(delta) {
     const d = seekDuration();
     let t = video.currentTime + delta;
-    t = Math.max(0, d ? Math.min(d, t) : t);
+    if (current.info?.isLive && hls && video.seekable?.length) {
+      t = Math.max(video.seekable.start(0), Math.min(video.seekable.end(video.seekable.length - 1), t));
+    } else t = Math.max(0, d ? Math.min(d, t) : t);
     video.currentTime = t;
     updateProgress();
   }
+
+  goLiveBtn.addEventListener("click", () => {
+    if (!current.info?.isLive || !hls) return;
+    const bounds = video.seekable;
+    const target = Number.isFinite(hls.liveSyncPosition) ? hls.liveSyncPosition :
+      bounds?.length ? bounds.end(bounds.length - 1) - 2 : NaN;
+    if (Number.isFinite(target)) video.currentTime = Math.max(0, target);
+    updateProgress();
+  });
 
   function syncVolumeUI() {
     const level = video.muted ? 0 : Math.round(video.volume * 100);
@@ -1826,7 +2085,7 @@
   const savedSpeed = Number(store.get("ytSpeed", 1));
   if (SPEEDS.includes(savedSpeed)) setSpeed(savedSpeed);
   syncVolumeUI();
-  for (const name of ["home", "results", "related", "subs", "channel", "playlist", "history"]) createFeed(name);
+  for (const name of ["home", "results", "related", "subs", "channel", "playlist", "history", "saved"]) createFeed(name);
   syncSubButtons();
   showFeed("home");
 

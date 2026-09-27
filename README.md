@@ -23,6 +23,21 @@ bind address (for example, `HOST=::1` for IPv6 loopback). Binding to a LAN or
 wildcard address makes the unauthenticated proxy accessible to that network;
 only do that when you intend to share it and have appropriate access controls.
 
+For a private LAN deployment, set `PRIVAPROXY_PASSWORD` to enable a sign-in
+page. All HTTP routes and proxy WebSocket upgrades then require a session;
+the password is never stored in the browser. Sign-in from another device
+requires HTTPS, normally provided by a reverse proxy. Do not expose this
+service to the public internet solely on the strength of the built-in
+password gate. The Status page offers Sign out, which also invalidates the
+browser's proxy transport credential. Internal latency checks use a separate
+server-only credential.
+
+The YouTube view offers local Watch Later and named lists, export/import,
+system media controls, and a live-HLS DVR/Go live control where the stream
+has a seekable window. The browser view saves each tab's last 50 history
+entries and can reopen recently closed tabs with Ctrl+Shift+T. The Status
+tab shows proxy and yt-dlp health plus recent playback issues in memory.
+
 YouTube work is limited to three concurrent yt-dlp processes and 24 waiting
 jobs. Jobs waiting longer than 10 seconds return `503 busy`; disconnected
 requests cancel work once no other request needs it. Configure these limits

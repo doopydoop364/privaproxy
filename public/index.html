@@ -13,6 +13,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab is-active" data-view="browser" role="tab">Browser</button>
       <button class="tab" data-view="youtube" role="tab">YouTube</button>
+      <button class="tab" data-view="status" role="tab">Status</button>
     </nav>
 
     <div class="proxy-select">
@@ -30,6 +31,7 @@
     <div class="browser-toolbar">
       <div class="tabstrip" id="tabStrip">
         <button class="tabstrip-new" id="newTabBtn" title="New tab" type="button">+</button>
+        <button class="tabstrip-new" id="reopenTabBtn" title="Reopen closed tab (Ctrl+Shift+T)" type="button" disabled>↶</button>
       </div>
 
       <form id="browseForm" class="address-bar">
@@ -91,6 +93,7 @@
             <button id="ytMuteBtn" class="yt-btn" type="button" aria-label="Mute"></button>
             <input id="ytVolume" class="yt-range yt-volume" type="range" min="0" max="100" value="100" aria-label="Volume" />
             <span id="ytTime" class="yt-time">0:00 / 0:00</span>
+            <button id="ytGoLive" class="yt-btn yt-live-btn" type="button" hidden>Go live</button>
             <span class="spacer"></span>
             <select id="ytCaptions" class="yt-select" aria-label="Captions" hidden></select>
             <button id="ytCaptionStyleBtn" class="yt-btn yt-cc-style" type="button" aria-label="Caption style" title="Caption style" hidden>Aa</button>
@@ -107,6 +110,7 @@
       <div class="yt-now-playing">
         <div class="yt-title-row">
           <h2 id="ytTitle"></h2>
+          <button id="ytSaveVideo" class="yt-action-btn" type="button" hidden>Save to Watch Later</button>
           <button id="ytClose" class="yt-action-btn" type="button" title="Close the video and go back to Home">✕ Close</button>
         </div>
         <p id="ytMeta" class="yt-meta"></p>
@@ -140,6 +144,7 @@
         <button type="button" class="yt-feed-tab" data-feed="channel" role="tab" aria-selected="false" hidden>Channel</button>
         <button type="button" class="yt-feed-tab" data-feed="playlist" role="tab" aria-selected="false" hidden>Playlist</button>
         <button type="button" class="yt-feed-tab" data-feed="history" role="tab" aria-selected="false">History</button>
+        <button type="button" class="yt-feed-tab" data-feed="saved" role="tab" aria-selected="false">Saved</button>
       </div>
       <div class="yt-feed-bar-right">
         <select id="ytHomeAlgo" class="yt-home-algo" aria-label="Home feed ordering" hidden>
@@ -152,12 +157,22 @@
     <div id="ytFeeds"></div>
   </section>
 
+  <section id="view-status" class="view status-view">
+    <h1>Service status</h1>
+    <button id="statusRefresh" type="button">Refresh</button>
+    <form method="post" action="/logout" id="statusLogout" hidden><button type="submit">Sign out</button></form>
+    <h2>Proxy backends</h2><div id="statusBackends" aria-live="polite">Checking…</div>
+    <h2>YouTube tools</h2><div id="statusYoutube" aria-live="polite">Checking…</div>
+    <h2>Recent playback issues</h2><ul id="statusIssues"></ul>
+  </section>
+
   <script src="/uv/uv.bundle.js"></script>
   <script src="/uv/uv.config.js"></script>
   <script src="/scramjet/scramjet.all.js"></script>
   <script type="module" src="/js/app.js"></script>
   <script src="/vendor/hls/hls.min.js"></script>
   <script src="/js/ytpure.js"></script>
+  <script src="/js/status.js"></script>
   <script src="/js/youtube.js"></script>
 </body>
 </html>

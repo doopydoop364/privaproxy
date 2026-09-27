@@ -52,7 +52,7 @@ module.exports = {
   name: "Ultraviolet (built-in)",
   bareServers, // exposed so registry.js can list them + latency.js can test them
 
-  mount(app, server) {
+  mount(app, server, auth) {
     // Serve our own uv.config.js override FIRST (tells UV where the bare
     // server is). This must come before the dist folder below, because
     // the package ships its own generic uv.config.js (prefix: "/service/")
@@ -84,6 +84,7 @@ module.exports = {
     // Bare servers also need to intercept WebSocket upgrade requests
     // (used for sites that hold live connections).
     server.on("upgrade", (req, socket, head) => {
+      if (auth && !auth.rewriteBare(req) && !auth.authorized(req)) { socket.destroy(); return; }
       const match = bareServers.find((b) => b.server?.shouldRoute(req));
       if (match) match.server.routeUpgrade(req, socket, head);
       else socket.destroy(); // nobody owns this upgrade; don't leave the socket open forever

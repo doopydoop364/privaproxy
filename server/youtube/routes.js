@@ -4,6 +4,7 @@ const { Readable } = require("stream");
 const yt = require("./ytdlp");
 const hlsLib = require("./hls");
 const sponsorblock = require("./sponsorblock");
+const thumbnails = require("./thumbnail");
 const { cancelBody, readCapped } = require("./upstream");
 
 const router = express.Router();
@@ -450,6 +451,21 @@ router.get("/channel-image/:id/:kind", async (req, res) => {
     res.set({ "content-type": type, "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }).send(buf);
   } catch (err) {
     sendError(res, err);
+  }
+});
+
+// A fixed-host image route: the browser never needs to contact ytimg directly.
+router.get("/thumbnail/:id/:size.jpg", async (req, res) => {
+  if (!thumbnails.ID_RE.test(req.params.id) || !thumbnails.SIZES.has(req.params.size))
+    return res.status(400).json({ error: "bad_request", message: "Invalid thumbnail." });
+  const ac = abortOnClose(res);
+  try {
+    const image = await thumbnails.fetchThumbnail(req.params.id, req.params.size, ac.signal);
+    if (ac.signal.aborted) return;
+    if (image.status !== 200) return res.status(image.status === 404 ? 404 : 502).end();
+    res.set({ "content-type": image.type, "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }).send(image.body);
+  } catch {
+    if (!ac.signal.aborted) res.status(502).json({ error: "thumbnail_unreachable", message: "Couldn't fetch the thumbnail." });
   }
 });
 

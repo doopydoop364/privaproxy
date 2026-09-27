@@ -30,7 +30,7 @@ const VIDEO = {
   available: {}, warnings: [],
 };
 
-function boot(seed, override) {
+function boot(seed, override, setup) {
   const timers = [];
   const env = makeEnv({
     seed,
@@ -66,6 +66,7 @@ function boot(seed, override) {
     },
   });
   env.sandbox.YtPure = require("../public/js/ytpure.js");
+  if (setup) setup(env);
   // record long timers (the audio-hold watchdog) so tests can fire them without waiting
   const realSetTimeout = env.sandbox.setTimeout;
   env.sandbox.setTimeout = (fn, ms, ...a) => (ms >= 5000 ? (timers.push({ fn, ms }), timers.length) : realSetTimeout(fn, ms, ...a));
@@ -90,6 +91,40 @@ test("loads without errors and shows the home empty state", async () => {
   assert.ok(env.requests.includes("/api/youtube/status"));
   assert.match(feedSection(env, "home").textContent, /Recommendations appear here/);
   assert.equal(env.byId.get("ytPip").hidden, false);
+});
+
+test("live HLS takes priority, seeks within its DVR window, and returns to live edge", async () => {
+  let player;
+  class HlsFixture {
+    static isSupported() { return true; }
+    static Events = { MANIFEST_PARSED: "manifest", LEVEL_SWITCHED: "level", FRAG_LOADED: "fragment", ERROR: "error" };
+    constructor(config) { this.config = config; this.levels = []; this.liveSyncPosition = 90; player = this; }
+    on() {}
+    loadSource(url) { this.source = url; }
+    attachMedia() {}
+    destroy() {}
+  }
+  const env = boot({}, async url => url.startsWith("/api/youtube/video/") ? {
+    status: 200, body: { ...VIDEO, isLive: true, hls: true, duration: null },
+  } : null, ({ sandbox, byId }) => {
+    sandbox.Hls = HlsFixture;
+    byId.get("ytVideo").seekable = { length: 1, start: () => 50, end: () => 95 };
+  });
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  assert.equal(player.config.lowLatencyMode, true);
+  assert.match(player.source, /\/api\/youtube\/hls\/aaaaaaaaaaa\/master\.m3u8/);
+  const video = env.byId.get("ytVideo");
+  video.currentTime = 70;
+  video.dispatch("timeupdate");
+  assert.match(env.byId.get("ytTime").textContent, /LIVE/);
+  assert.equal(env.byId.get("ytGoLive").hidden, false);
+  env.byId.get("ytGoLive").click();
+  assert.equal(video.currentTime, 90);
+  const seek = env.byId.get("ytSeek");
+  seek.value = "0";
+  seek.dispatch("change");
+  assert.equal(video.currentTime, 50);
+  assert.equal(env.store.has("ytResume"), false);
 });
 
 test("queue advance preserves the next video's saved resume position", async () => {
@@ -528,6 +563,73 @@ test("feed pages deduplicate repeated video ids within the same response", async
   } : undefined);
   await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
   assert.equal(cards(env, "playlist").length, 1);
+});
+
+test("Watch Later and named playlists save, queue, remove and persist videos", async () => {
+  const env = boot();
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  cards(env, "playlist")[0].querySelector(".yt-card-save").click();
+  tabBtn(env, "saved").click();
+  await tick();
+  assert.equal(cards(env, "saved").length, 1);
+  assert.equal(JSON.parse(env.store.get("ytSavedLists"))[0].items[0].id, "aaaaaaaaaaa");
+
+  const saved = feedSection(env, "saved");
+  const name = saved.querySelector(".yt-list-name");
+  name.value = "Favorites";
+  saved.querySelectorAll(".yt-action-btn").find(button => button.textContent === "Create").click();
+  await tick();
+  assert.equal(saved.querySelector(".yt-select").value.startsWith("list-"), true);
+  assert.equal(JSON.parse(env.store.get("ytSavedLists"))[1].name, "Favorites");
+  tabBtn(env, "playlist").click();
+  cards(env, "playlist")[1].querySelector(".yt-card-main").click();
+  await tick();
+  env.byId.get("ytSaveVideo").click();
+  assert.equal(JSON.parse(env.store.get("ytSavedLists"))[1].items[0].id, "bbbbbbbbbbb");
+
+  tabBtn(env, "saved").click();
+  await tick();
+  saved.querySelectorAll(".yt-action-btn").find(button => button.textContent === "Play all").click();
+  await tick();
+  assert.match(env.byId.get("ytVideo").src, /\/bbbbbbbbbbb\?/);
+  cards(env, "saved")[0].querySelector(".yt-card-save").click();
+  await tick();
+  assert.equal(JSON.parse(env.store.get("ytSavedLists"))[1].items.length, 0);
+});
+
+test("media controls receive local artwork and control play, seek and next", async () => {
+  const handlers = new Map();
+  const session = { playbackState: "none", setActionHandler: (name, fn) => handlers.set(name, fn), setPositionState(state) { this.position = state; } };
+  const env = boot({}, null, ({ sandbox }) => {
+    sandbox.navigator = { mediaSession: session };
+    sandbox.MediaMetadata = class { constructor(data) { Object.assign(this, data); } };
+  });
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  await tick();
+  assert.equal(session.metadata.title, "Video A");
+  assert.equal(session.metadata.artwork[0].src, "/api/youtube/thumbnail/aaaaaaaaaaa/mqdefault.jpg");
+  const video = env.byId.get("ytVideo");
+  video.duration = 100;
+  video.currentTime = 40;
+  handlers.get("seekbackward")({ seekOffset: 5 });
+  assert.equal(video.currentTime, 35);
+  handlers.get("seekto")({ seekTime: 50 });
+  assert.equal(video.currentTime, 50);
+  handlers.get("pause")();
+  assert.equal(video.paused, true);
+  handlers.get("play")();
+  assert.equal(video.paused, false);
+  video.dispatch("timeupdate");
+  assert.equal(session.position.position, 50);
+  tabBtn(env, "related").click();
+  await tick();
+  cards(env, "related")[0].querySelector(".yt-card-queue").click();
+  handlers.get("nexttrack")();
+  await tick();
+  assert.equal(session.metadata.artwork[0].src, "/api/youtube/thumbnail/rrrrrrrrrrr/mqdefault.jpg");
+  env.byId.get("ytClose").click();
+  assert.equal(session.metadata, null);
+  assert.equal(session.playbackState, "none");
 });
 
 test("empty filtered pages leave later unseen videos reachable", async () => {

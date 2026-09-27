@@ -119,8 +119,8 @@ class El {
 function makeEnv({ respond, seed = {} }) {
   const byId = new Map();
   const root = new El("body");
-  const ids = ["view-youtube", "ytSearchForm", "ytSearchInput", "ytBanner", "ytFeedTabs", "ytFeeds", "ytClearHistory", "ytPlayerWrap", "ytPlayer", "ytVideo",
-    "ytSpinner", "ytPlayerMsg", "ytSeek", "ytPlayBtn", "ytNextBtn", "ytMuteBtn", "ytVolume", "ytTime", "ytSpeed", "ytQuality", "ytFullscreen", "ytTitle", "ytChannel",
+  const ids = ["view-youtube", "ytSearchForm", "ytSearchInput", "ytBanner", "ytFeedTabs", "ytFeeds", "ytClearHistory", "ytSaveVideo", "ytPlayerWrap", "ytPlayer", "ytVideo",
+    "ytSpinner", "ytPlayerMsg", "ytSeek", "ytPlayBtn", "ytNextBtn", "ytMuteBtn", "ytVolume", "ytTime", "ytGoLive", "ytSpeed", "ytQuality", "ytFullscreen", "ytTitle", "ytChannel",
     "ytQueue", "ytQueueList", "ytQueueClear", "ytCaptions", "ytLoop", "ytPip", "ytTheater", "ytSponsor", "ytSubBtn", "ytChannelIcon", "ytMeta", "ytCaptionStyleBtn", "ytCaptionPanel", "ytClose", "ytHomeAlgo"];
   for (const id of ids) {
     const e = new El(id === "ytVideo" ? "video" : id === "ytSearchInput" ? "input" : id === "ytHomeAlgo" ? "select" : "div");
@@ -128,7 +128,7 @@ function makeEnv({ respond, seed = {} }) {
     root.appendChild(e);
   }
   byId.get("ytFeedTabs").children = [];
-  for (const [name, hidden] of [["home", false], ["results", true], ["related", true], ["subs", false], ["channel", true], ["playlist", true], ["history", false]]) {
+  for (const [name, hidden] of [["home", false], ["results", true], ["related", true], ["subs", false], ["channel", true], ["playlist", true], ["history", false], ["saved", false]]) {
     const b = new El("button");
     b.className = "yt-feed-tab";
     b.dataset.feed = name;

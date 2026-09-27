@@ -16,8 +16,9 @@ function start(env = {}) {
   };
   const modules = {
     http: { createServer: () => server }, path, express, cors: () => {},
-    "./proxies/registry": { mountAll() {}, startLatencyChecks: origin => checkOrigin = origin },
+    "./proxies/registry": { mountAll() {}, listWithStatus: () => [], startLatencyChecks: origin => checkOrigin = origin },
     "./youtube/routes": {},
+    "./auth": { createAuth: () => ({ enabled: false, mount() {}, setBareEndpoints() {} }) },
   };
   const file = path.resolve(__dirname, "../server/index.js");
   vm.runInNewContext(fs.readFileSync(file, "utf8"), {

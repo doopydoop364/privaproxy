@@ -7,9 +7,9 @@ const latency = require("./latency");
 // own -- it shares whichever backend is currently active via bare-mux.
 const providers = [ultraviolet, scramjet];
 
-function mountAll(app, server) {
+function mountAll(app, server, auth) {
   for (const provider of providers) {
-    provider.mount(app, server);
+    provider.mount(app, server, auth);
     console.log(`Mounted proxy provider: ${provider.name} (${provider.id})`);
   }
 }
@@ -17,8 +17,11 @@ function mountAll(app, server) {
 // Kicks off the periodic latency/health checks for every bare backend
 // across all providers. Call once, after the server starts listening (it
 // needs the server's own origin to test against itself over loopback).
-function startLatencyChecks(origin) {
-  latency.start(providers.flatMap(provider => provider.bareServers || []), origin);
+function startLatencyChecks(origin, auth) {
+  const entries = providers.flatMap(provider => provider.bareServers || []);
+  latency.start(auth?.enabled ? entries.map(entry => ({
+    ...entry, bareEndpoint: auth.internalBareEndpoint(entry.bareEndpoint),
+  })) : entries, origin);
 }
 
 // What the frontend's proxy dropdown renders: one entry per bare backend

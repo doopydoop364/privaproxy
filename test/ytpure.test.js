@@ -136,6 +136,22 @@ test("mergeHistory keeps only well-formed entries and de-duplicates", () => {
   assert.equal(P.mergeHistory(existing, imported, 2).length, 2);
 });
 
+test("saved lists validate names, IDs, video metadata and local thumbnails", () => {
+  const raw = [
+    { id: "watch-later", name: "Overridden", items: [{ id: "aaaaaaaaaaa", title: "First", thumbnail: "https://i.ytimg.com/vi/aaaaaaaaaaa/mqdefault.jpg" }, { id: "bad", title: "Invalid" }] },
+    { id: "list-abcdefgh", name: " Favorites ", items: [{ id: "bbbbbbbbbbb", title: "Second", thumbnail: "https://evil.example/x" }] },
+    { id: "list-abcdefgh", name: "Duplicate", items: [] },
+    { id: "../../path", name: "Bad", items: [] },
+  ];
+  const lists = P.normalizeSavedLists(raw);
+  assert.deepEqual(lists.map(list => [list.id, list.name, list.items.length]), [
+    ["watch-later", "Watch Later", 1], ["list-abcdefgh", "Favorites", 1],
+  ]);
+  assert.equal(lists[0].items[0].thumbnail, "/api/youtube/thumbnail/aaaaaaaaaaa/mqdefault.jpg");
+  assert.equal(lists[1].items[0].thumbnail, "");
+  assert.equal(P.normalizeSavedLists("corrupt")[0].id, "watch-later");
+});
+
 test("timeAgo reads like YouTube", () => {
   const now = Date.UTC(2026, 8, 21, 12, 0, 0);
   const ago = (sec, approx) => P.timeAgo(now / 1000 - sec, now, approx);
@@ -176,9 +192,11 @@ test("fmtSubscribers / fmtCompact", () => {
   assert.equal(P.fmtCompact(999.7e3), "1M");
 });
 
-test("safeImageUrl allows only YouTube thumbnails and our own channel-image route", () => {
+test("safeImageUrl renders thumbnails and channel art only through local routes", () => {
   const CH = "UC4QobU6STFB0P71PMvOGN5A";
-  assert.equal(P.safeImageUrl("https://i.ytimg.com/vi/x/mqdefault.jpg"), "https://i.ytimg.com/vi/x/mqdefault.jpg");
+  const thumb = "/api/youtube/thumbnail/aaaaaaaaaaa/mqdefault.jpg";
+  assert.equal(P.safeImageUrl(thumb), thumb);
+  assert.equal(P.safeImageUrl("https://i.ytimg.com/vi/aaaaaaaaaaa/mqdefault.jpg"), thumb);
   assert.equal(P.safeImageUrl(`/api/youtube/channel-image/${CH}/avatar`), `/api/youtube/channel-image/${CH}/avatar`);
   assert.equal(P.safeImageUrl(`/api/youtube/channel-image/${CH}/banner`), `/api/youtube/channel-image/${CH}/banner`);
   for (const bad of ["https://yt3.googleusercontent.com/abc=s96-c", "http://i.ytimg.com/x", "https://i.ytimg.com.evil.example/x",
@@ -187,6 +205,8 @@ test("safeImageUrl allows only YouTube thumbnails and our own channel-image rout
     assert.equal(P.safeImageUrl(bad), "", String(bad));
   assert.equal(P.channelImagePath(CH, "avatar"), `/api/youtube/channel-image/${CH}/avatar`);
   assert.equal(P.channelImagePath("nope", "avatar"), "");
+  assert.equal(P.thumbnailPath("aaaaaaaaaaa"), thumb);
+  assert.equal(P.thumbnailPath("invalid"), "");
 });
 
 test("caption style: defaults, allow-list and CSS", () => {

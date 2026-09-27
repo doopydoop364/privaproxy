@@ -240,6 +240,10 @@ button {
   border-color: var(--accent);
 }
 
+.tabstrip-new:disabled { opacity: .4; cursor: default; }
+
+.yt-live-btn { color: #f05b5b; font-weight: 700; white-space: nowrap; }
+
 /* ---------- Address bar ---------- */
 
 .address-bar {
@@ -888,6 +892,31 @@ button {
 .yt-card-queue:focus-visible,
 .yt-card-queue.is-added { opacity: 1; }
 .yt-card-queue:hover { background: var(--accent-yt); color: #2b1c02; }
+.yt-card-save {
+  position: absolute;
+  top: 40px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+.yt-card:hover .yt-card-save,
+.yt-card-save:focus-visible { opacity: 1; }
+@media (hover: none) { .yt-card-save { opacity: 1; } }
+.yt-list-name {
+  min-width: 130px;
+  max-width: 190px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+}
 
 /* --- feed headers, subscriptions, channel pages --- */
 

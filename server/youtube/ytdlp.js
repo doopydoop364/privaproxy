@@ -262,7 +262,7 @@ const playlistMemo = makeMemo(LIST_TTL_MS, 100);
 
 // ---------- public API ----------
 
-const thumbFor = (id) => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+const thumbFor = (id) => `/api/youtube/thumbnail/${id}/mqdefault.jpg`;
 
 function normalizeEntry(e) {
   if (!e || typeof e.id !== "string" || !ID_RE.test(e.id)) return null;

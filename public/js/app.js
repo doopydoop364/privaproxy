@@ -340,11 +340,26 @@ function syncTabOrderFromDom() {
 }
 
 // ---------- Restoring tabs after a reload ----------
-// Just engine + URL per tab, in order, plus which one was active -- not the
-// full back/forward history (a fresh load on restore is a fine trade for the
-// simplicity, same as goHistory's fresh loads within a session).
+// Persist tab order, selected engine and a bounded navigation history.
+// Restoring a history entry loads a fresh document, as goHistory does.
 const TABS_KEY = "browserTabs";
 const TABS_MAX = 20;
+const HISTORY_MAX = 50;
+const closedTabs = [];
+const reopenTabBtn = document.getElementById("reopenTabBtn");
+
+function tabSnapshot(t) {
+  return {
+    engine: t.engine, url: t.realUrl,
+    history: t.history.slice(-HISTORY_MAX),
+    historyIndex: Math.max(0, t.historyIndex - Math.max(0, t.history.length - HISTORY_MAX)),
+  };
+}
+
+function safeSavedUrl(url) {
+  if (typeof url !== "string" || url.length > 2048) return false;
+  try { return ["http:", "https:"].includes(new URL(url).protocol); } catch { return false; }
+}
 
 function saveTabs() {
   try {
@@ -352,7 +367,7 @@ function saveTabs() {
     localStorage.setItem(
       TABS_KEY,
       JSON.stringify({
-        tabs: snapshot.map((t) => ({ engine: t.engine, url: t.realUrl })),
+        tabs: snapshot.map(tabSnapshot),
         activeIndex: snapshot.findIndex((t) => t.id === activeTabId),
       })
     );
@@ -373,9 +388,17 @@ function readSavedTabs() {
     let activeIndex = -1;
     const list = [];
     data.tabs.forEach((t, i) => {
-      if (!t || typeof t.url !== "string" || (t.engine !== "uv" && t.engine !== "scramjet")) return;
+      if (!t || !safeSavedUrl(t.url) || (t.engine !== "uv" && t.engine !== "scramjet")) return;
       if (i === rawActiveIndex) activeIndex = list.length;
-      list.push(t);
+      const source = Array.isArray(t.history) ? t.history : [];
+      const offset = Math.max(0, source.length - HISTORY_MAX);
+      const history = source.slice(offset).filter(safeSavedUrl);
+      const index = Number.isInteger(t.historyIndex) ? t.historyIndex - offset : history.length - 1;
+      let historyIndex = Math.max(0, Math.min(index, history.length - 1));
+      if (!history.length || history[historyIndex] !== t.url) {
+        history.splice(historyIndex + 1); history.push(t.url); historyIndex = history.length - 1;
+      }
+      list.push({ engine: t.engine, url: t.url, history, historyIndex });
     });
     const tabs = list.slice(0, TABS_MAX);
     if (!tabs.length) return null;
@@ -406,7 +429,7 @@ async function restoreTabs() {
     // Scramjet failed to set up since this was saved: fall back to Ultraviolet
     // rather than lose the tab.
     const engine = t.engine === "scramjet" && scramjetOption.disabled ? "uv" : t.engine;
-    return createTab(t.url, engine);
+    return createTab(t.url, engine, t);
   });
 
   const active = restored[saved.activeIndex];
@@ -530,7 +553,7 @@ function renderBookmarks() {
   }
 }
 
-function createTab(initialTarget, engine) {
+function createTab(initialTarget, engine, snapshot) {
   const id = `tab-${++tabCounter}`;
   engine = engine || enginePicker.value; // "uv" or "scramjet" -- fixed for this tab's life
 
@@ -591,8 +614,8 @@ function createTab(initialTarget, engine) {
     engine: scramjetFrame ? "scramjet" : "uv",
     scramjetFrame,
     realUrl: null,
-    history: [],
-    historyIndex: -1,
+    history: snapshot?.history?.slice() || [],
+    historyIndex: snapshot?.historyIndex ?? -1,
     suppressHistoryPush: false,
     loading: false,
   };
@@ -634,6 +657,11 @@ function closeTab(id) {
   if (idx === -1) return;
 
   const [tab] = tabs.splice(idx, 1); // remove from state immediately
+  if (tab.realUrl && safeSavedUrl(tab.realUrl)) {
+    closedTabs.push(tabSnapshot(tab));
+    if (closedTabs.length > 10) closedTabs.shift();
+    reopenTabBtn.disabled = false;
+  }
   saveTabs();
 
   // Animate the pill out, then actually remove the DOM nodes once the
@@ -803,6 +831,7 @@ function pushHistory(tab, url) {
   if (tab.history[tab.historyIndex] === url) return; // no-op re-navigation
   tab.history = tab.history.slice(0, tab.historyIndex + 1);
   tab.history.push(url);
+  if (tab.history.length > HISTORY_MAX) tab.history.shift();
   tab.historyIndex = tab.history.length - 1;
   if (tab.id === activeTabId) updateNavButtons();
   saveTabs();
@@ -919,6 +948,21 @@ function onScramjetUrlChange(id, url) {
 }
 
 newTabBtn.addEventListener("click", () => createTab());
+function reopenClosedTab() {
+  const snapshot = closedTabs.pop();
+  if (!snapshot) return;
+  reopenTabBtn.disabled = closedTabs.length === 0;
+  const engine = snapshot.engine === "scramjet" && scramjetOption.disabled ? "uv" : snapshot.engine;
+  createTab(snapshot.url, engine, snapshot);
+}
+reopenTabBtn.addEventListener("click", reopenClosedTab);
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "t" &&
+      document.getElementById("view-browser").classList.contains("is-active") && closedTabs.length) {
+    event.preventDefault();
+    reopenClosedTab();
+  }
+});
 
 const backBtn = document.getElementById("backBtn");
 const forwardBtn = document.getElementById("forwardBtn");
