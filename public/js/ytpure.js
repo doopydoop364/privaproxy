@@ -179,6 +179,7 @@
     const label = (h, fps) => `${h}p${fps > 30 ? Math.round(fps) : ""}`;
 
     for (const s of (info && info.streams) || []) {
+      if (!canPlay(s.mime || `video/${s.ext || "mp4"}`, [s.vcodec, s.acodec].filter(Boolean).join(", "))) continue;
       if (!byHeight.has(s.height || 0)) {
         byHeight.set(s.height || 0, { value: `c:${s.formatId}`, label: s.label, height: s.height || 0, kind: "combined", videoId: s.formatId, audioId: null });
       }

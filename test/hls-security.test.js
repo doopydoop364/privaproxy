@@ -7,6 +7,10 @@ const { PassThrough } = require("stream");
 const { EventEmitter } = require("events");
 const hls = require("../server/youtube/hls");
 const upstream = require("../server/youtube/hlsUpstream");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+const { createRequire } = require("module");
 
 test("HLS rejects private hosts, foreign hosts, credentials and non-HTTPS URLs", () => {
   for (const url of [
@@ -78,4 +82,24 @@ test("HLS validates redirects and DNS inside the connection lookup", async () =>
     https.get = savedGet;
     dns.lookup = savedLookup;
   }
+});
+
+test("HLS times out connections stalled before a socket is available", async () => {
+  let expire, idleTimeout;
+  const request = new EventEmitter();
+  request.setTimeout = (_ms, callback) => { idleTimeout = callback; };
+  request.destroy = error => request.emit("error", error);
+  const file = path.resolve(__dirname, "../server/youtube/hlsUpstream.js");
+  const realRequire = createRequire(file);
+  const context = vm.createContext({
+    require: name => name === "https" ? { get: () => request } : realRequire(name),
+    module: { exports: {} }, URL, Headers, clearTimeout() {},
+    setTimeout: fn => { expire = fn; return { unref() {} }; },
+  });
+  vm.runInContext(fs.readFileSync(file, "utf8"), context);
+  const pending = context.module.exports.fetchHls("https://r1.googlevideo.com/file");
+  assert.equal(typeof idleTimeout, "function");
+  const rejected = assert.rejects(pending, /timed out/);
+  expire();
+  await rejected;
 });

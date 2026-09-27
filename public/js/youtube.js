@@ -98,10 +98,10 @@
     }
   }
 
-  async function api(path) {
+  async function api(path, options) {
     let res;
     try {
-      res = await fetch(path);
+      res = await fetch(path, options);
     } catch {
       throw new ApiError("network", "Couldn't reach the privaproxy server.");
     }
@@ -133,7 +133,7 @@
 
   function readHistory() {
     const h = store.get(HISTORY_KEY, []);
-    return Array.isArray(h) ? h.filter((x) => x && typeof x.id === "string") : [];
+    return Array.isArray(h) ? h.filter((x) => x && typeof x.id === "string" && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, HISTORY_MAX) : [];
   }
   function recordHistory(entry) {
     const item = {
@@ -264,11 +264,11 @@
         const page = feed.page + 1;
         const data = await feed.fetchPage(page);
         if (gen !== feed.gen) return; // the feed was reset while we waited
-        const fresh = (Array.isArray(data.results) ? data.results : []).filter(
-          (item) => !feed.seen.has(item.id) && !(feed.exclude && feed.exclude(item))
-        );
-        for (const item of fresh) {
+        const fresh = [];
+        for (const item of Array.isArray(data.results) ? data.results : []) {
+          if (!item || feed.seen.has(item.id) || (feed.exclude && feed.exclude(item))) continue;
           feed.seen.add(item.id);
+          fresh.push(item);
           feed.items.push(item);
           feed.grid.appendChild(makeCard(item, feed));
         }
@@ -277,7 +277,12 @@
         feed.page = page;
         feed.done = !data.hasMore;
       }
-      if (added === 0) feed.done = true; // nothing new after several pages: stop rather than loop
+      if (added === 0 && !feed.done) {
+        // Bound automatic retries without discarding later pages with unseen videos.
+        observer?.unobserve(feed.sentinel);
+        setStatus(feed, feed.grid.childElementCount ? "" : feed.emptyText, { button: "Load more" });
+        return;
+      }
       if (!feed.grid.childElementCount) setStatus(feed, feed.emptyText);
       else if (feed.done) setStatus(feed, "That's everything.");
       else setStatus(feed, "", observer ? {} : { button: "Load more" });
@@ -531,6 +536,7 @@
 
   function openChannel(id, name) {
     const feed = feeds.channel;
+    const gen = feed.gen + 1;
     revealTab("channel", name ? `Channel: ${name}` : "Channel");
     const known = channelInfo(id);
     feed.head.replaceChildren(el("h3", "yt-feed-title", name || (known && known.name) || "Loading channel…"));
@@ -538,7 +544,7 @@
     resetFeed(feed, {
       fetchPage: async (page) => {
         const data = await api(`/api/youtube/channel/${encodeURIComponent(id)}?page=${page}`);
-        if (!headDone && data.channel) {
+        if (gen === feed.gen && !headDone && data.channel) {
           headDone = true;
           rememberChannel(data.channel);
           revealTab("channel", `Channel: ${data.channel.name || name || "Channel"}`);
@@ -553,13 +559,14 @@
 
   function openPlaylist(id) {
     const feed = feeds.playlist;
+    const gen = feed.gen + 1;
     revealTab("playlist", "Playlist");
     feed.head.replaceChildren(el("h3", "yt-feed-title", "Loading playlist…"));
     let headDone = false;
     resetFeed(feed, {
       fetchPage: async (page) => {
         const data = await api(`/api/youtube/playlist/${encodeURIComponent(id)}?page=${page}`);
-        if (!headDone && data.playlist) {
+        if (gen === feed.gen && !headDone && data.playlist) {
           headDone = true;
           const t = data.playlist.title || "Playlist";
           revealTab("playlist", `Playlist: ${t.length > 24 ? t.slice(0, 23) + "…" : t}`);
@@ -797,9 +804,10 @@
   const audio = new Audio();
   audio.preload = "auto";
   const { buildQualityList, choosePreferred, driftCorrection, segmentToSkip, resumePoint, updateResume } = window.YtPure;
-  const canPlay = (mime, codec) => !!video.canPlayType(`${mime}; codecs="${codec}"`);
+  const canPlay = (mime, codec) => !!video.canPlayType(codec ? `${mime}; codecs="${codec}"` : mime);
   let adaptiveActive = false;
   let playToken = 0; // guards against out-of-order responses when clicking quickly
+  let videoRequest = null;
   let pendingResume = 0;
   let hls = null; // active hls.js instance (adaptive playback), if any
   let hlsNetRetries = 0;
@@ -824,6 +832,8 @@
   async function play(entry) {
     saveResume(true); // remember where the previous video was before switching away from it
     const token = ++playToken;
+    videoRequest?.abort();
+    const request = videoRequest = new AbortController();
     current.entry = entry;
     current.info = null;
     current.formatId = null;
@@ -853,7 +863,7 @@
 
     let info;
     try {
-      info = await api(`/api/youtube/video/${encodeURIComponent(entry.id)}`);
+      info = await api(`/api/youtube/video/${encodeURIComponent(entry.id)}`, { signal: request.signal });
     } catch (err) {
       if (token !== playToken) return;
       setBuffering(false);
@@ -1238,6 +1248,8 @@
   function closePlayer() {
     saveResume(true);
     playToken++; // any lookup still in flight for the video is now stale
+    videoRequest?.abort();
+    videoRequest = null;
     destroyHls();
     stopAudio();
     video.pause();
@@ -1542,6 +1554,9 @@
     scrubbing = false;
     seek.blur(); // hand keyboard shortcuts back to the page
   });
+  for (const event of ["pointerup", "pointercancel", "blur"]) {
+    seek.addEventListener(event, () => { scrubbing = false; });
+  }
 
   function seekBy(delta) {
     const d = seekDuration();
@@ -1796,7 +1811,8 @@
 
   // Read both saved values BEFORE applying either: setting one fires
   // `volumechange`, whose handler would otherwise overwrite the other.
-  const savedVolume = Math.min(1, Math.max(0, Number(store.get("ytVolume", 1))));
+  const volumeSetting = Number(store.get("ytVolume", 1));
+  const savedVolume = Number.isFinite(volumeSetting) ? Math.min(1, Math.max(0, volumeSetting)) : 1;
   const savedMuted = !!store.get("ytMuted", false);
   video.volume = savedVolume;
   video.muted = savedMuted;

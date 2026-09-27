@@ -30,11 +30,15 @@ const VIDEO = {
   available: {}, warnings: [],
 };
 
-function boot(seed) {
+function boot(seed, override) {
   const timers = [];
   const env = makeEnv({
     seed,
     respond: async (url) => {
+      if (override) {
+        const response = await override(url);
+        if (response) return response;
+      }
       if (url.startsWith("/api/youtube/status")) return { status: 200, body: { ok: true } };
       if (url.startsWith("/api/youtube/playlist/")) return { status: 200, body: { playlist: { id: PL, title: "My list", author: "Me" }, results: [item("aaaaaaaaaaa", "Video A"), item("bbbbbbbbbbb", "Video B"), item("ccccccccccc", "Video C")], hasMore: false } };
       if (url.startsWith("/api/youtube/channel/")) return { status: 200, body: { channel: CHANNEL_META, results: [item("aaaaaaaaaaa", "Video A")], hasMore: false } };
@@ -493,6 +497,92 @@ test("turning captions off disables the old track before removing it", async () 
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+for (const type of ["channel", "playlist"]) {
+  test(`late ${type} responses cannot replace a newer header or its videos`, async () => {
+    const first = type === "channel" ? CH : PL;
+    const second = type === "channel" ? "UC" + "b".repeat(22) : "PLabcdefghij";
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const env = boot({}, async url => {
+      if (!url.startsWith(`/api/youtube/${type}/`)) return;
+      const old = url.includes(first);
+      if (old) await gate;
+      const meta = type === "channel" ? { id: old ? first : second, name: old ? "Old" : "New" } : { title: old ? "Old" : "New" };
+      return { status: 200, body: { [type]: meta, results: [item(old ? "aaaaaaaaaaa" : "bbbbbbbbbbb", old ? "Old video" : "New video")], hasMore: false } };
+    });
+    await submit(env, `https://www.youtube.com/${type === "channel" ? "channel/" : "playlist?list="}${first}`);
+    await submit(env, `https://www.youtube.com/${type === "channel" ? "channel/" : "playlist?list="}${second}`);
+    release();
+    await tick();
+    assert.match(feedSection(env, type).querySelector(".yt-feed-title").textContent, /New/);
+    assert.match(tabBtn(env, type).textContent, /New/);
+    assert.equal(cards(env, type).length, 1);
+    assert.match(cards(env, type)[0].textContent, /New video/);
+  });
+}
+
+test("feed pages deduplicate repeated video ids within the same response", async () => {
+  const env = boot({}, async url => url.startsWith("/api/youtube/playlist/") ? {
+    status: 200, body: { playlist: { title: "Duplicates" }, results: [item("aaaaaaaaaaa", "First"), item("aaaaaaaaaaa", "Again")], hasMore: false },
+  } : undefined);
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  assert.equal(cards(env, "playlist").length, 1);
+});
+
+test("empty filtered pages leave later unseen videos reachable", async () => {
+  const env = boot({ ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Watched")]) }, async url => {
+    if (!url.startsWith("/api/youtube/home")) return;
+    const page = Number(new URL(url, "http://test").searchParams.get("page"));
+    return { status: 200, body: { results: [item(page <= 3 ? "aaaaaaaaaaa" : "bbbbbbbbbbb", "Result")], hasMore: page < 4 } };
+  });
+  await tick();
+  const button = feedSection(env, "home").querySelector("button");
+  assert.equal(button.textContent, "Load more");
+  button.click();
+  await tick();
+  assert.equal(cards(env, "home").length, 1);
+});
+
+test("invalid stored volume and history do not break startup or recommendations", async () => {
+  const env = boot({ ytVolume: JSON.stringify("broken"), ytHistory: JSON.stringify([item("invalid", "Bad"), item("aaaaaaaaaaa", "Good")]) });
+  await tick();
+  assert.equal(env.byId.get("ytVideo").volume, 1);
+  assert.ok(env.requests.some(url => url.startsWith("/api/youtube/home?seeds=aaaaaaaaaaa&")));
+});
+
+test("releasing or canceling an unchanged seek resumes progress updates", async () => {
+  const env = boot();
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  const video = env.byId.get("ytVideo"), seek = env.byId.get("ytSeek");
+  video.duration = 100;
+  for (const event of ["pointerup", "pointercancel", "blur"]) {
+    seek.dispatch("pointerdown");
+    seek.dispatch(event);
+    video.currentTime += 10;
+    video.dispatch("timeupdate");
+    assert.equal(Number(seek.value), video.currentTime * 10);
+  }
+});
+
+test("switching or closing videos aborts abandoned metadata requests", async () => {
+  const env = boot();
+  const requests = [];
+  const realFetch = env.sandbox.fetch;
+  env.sandbox.fetch = (url, options) => {
+    if (!url.startsWith("/api/youtube/video/")) return realFetch(url, options);
+    requests.push(options.signal);
+    return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+  };
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  await submit(env, "https://youtu.be/bbbbbbbbbbb");
+  assert.equal(requests[0].aborted, true);
+  assert.equal(requests[1].aborted, false);
+  env.byId.get("ytClose").click();
+  await tick();
+  assert.equal(requests[1].aborted, true);
+  assert.equal(env.byId.get("ytPlayerWrap").hidden, true);
+});
 
 test("cards without a date (YouTube Mixes) get one looked up in the background", async () => {
   const env = boot();

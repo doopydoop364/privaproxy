@@ -32,8 +32,11 @@ function formatProxyLabel(p) {
 }
 
 async function fetchProxies() {
-  const res = await fetch("/api/proxies");
-  return res.json();
+  const res = await fetch("/api/proxies", { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`Proxy list returned ${res.status}.`);
+  const proxies = await res.json();
+  if (!Array.isArray(proxies)) throw new Error("Invalid proxy list.");
+  return proxies;
 }
 
 // Renders the dropdown from the latest proxy list and returns whichever
@@ -83,21 +86,33 @@ function renderProxyOptions(proxies) {
 // first list load failing), so every refresh re-syncs the transport to
 // whatever ends up selected instead of assuming the two agree.
 let appliedProxyId = null;
+let transportSwitch = Promise.resolve();
 
-async function switchToProxy(proxy) {
-  if (!bareMuxConnection || !proxy || proxy.id === appliedProxyId) return;
-  await bareMuxConnection.setTransport("/baremod/index.mjs", [
-    location.origin + proxy.bareEndpoint,
-  ]);
-  appliedProxyId = proxy.id;
+function switchToProxy(proxy) {
+  // Transport changes must finish in selection order, even when loading a
+  // backend takes longer than the next dropdown change or health refresh.
+  const next = transportSwitch.catch(() => {}).then(async () => {
+    if (!bareMuxConnection || !proxy || proxy.id === appliedProxyId) return;
+    await bareMuxConnection.setTransport("/baremod/index.mjs", [
+      new URL(proxy.bareEndpoint, location.origin).href,
+    ]);
+    appliedProxyId = proxy.id;
+  });
+  transportSwitch = next;
+  return next;
 }
 
+let proxyRefresh = 0;
 async function refreshProxies() {
+  const generation = ++proxyRefresh;
   try {
-    const selected = renderProxyOptions(await fetchProxies());
+    const proxies = await fetchProxies();
+    if (generation !== proxyRefresh) return null;
+    const selected = renderProxyOptions(proxies);
     await switchToProxy(selected);
     return selected;
   } catch (err) {
+    if (generation !== proxyRefresh) return null;
     console.error("Failed to load proxy list:", err);
     proxyDot.className = "proxy-dot offline";
     return null;
@@ -107,10 +122,12 @@ async function refreshProxies() {
 proxyPicker.addEventListener("change", () => refreshProxies());
 
 async function setupProxy() {
-  await refreshProxies(); // renders the list; can't switch yet, bare-mux isn't connected
-
   bareMuxConnection = new BareMuxConnection("/baremux/worker.js");
-  if (!await refreshProxies()) throw new Error("No proxy backend is available.");
+  // A temporary API/transport failure during startup should recover without
+  // requiring a page reload. Engine registration still awaits this setup.
+  while (!await refreshProxies()) {
+    await new Promise(resolve => setTimeout(resolve, PROXY_REFRESH_MS));
+  }
 
   // Keeps the latency figures fresh, and moves the transport if the selected
   // backend went offline and the dropdown fell back to another one. Matches how often
@@ -221,7 +238,12 @@ function normalizeUrl(raw) {
   // A space means a search phrase ("what is node.js"), never a URL.
   const looksLikeUrl = !/\s/.test(trimmed) && (/^https?:\/\//i.test(trimmed) || /^[\w-]+(\.[\w-]+)+/.test(trimmed));
   if (looksLikeUrl) {
-    return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).href;
+    } catch {
+      // Malformed URL-shaped input remains a search instead of throwing in
+      // Scramjet's URL constructor and leaving the tab stuck loading.
+    }
   }
   // Treat it as a search query if it doesn't look like a URL.
   return `https://duckduckgo.com/html/?q=${encodeURIComponent(trimmed)}`;
@@ -240,10 +262,14 @@ function hostnameOf(url) {
 // the iframe is same-origin with us -- no CORS issue reading its location.
 function decodeFrameUrl(win) {
   try {
-    const { pathname } = win.location;
+    const { pathname, search, hash } = win.location;
     if (!pathname.startsWith(__uv$config.prefix)) return null;
     const encodedPart = pathname.slice(__uv$config.prefix.length);
-    return __uv$config.decodeUrl(encodedPart);
+    const decoded = __uv$config.decodeUrl(encodedPart + search);
+    if (!hash) return decoded;
+    const url = new URL(decoded);
+    url.hash = hash;
+    return url.href;
   } catch {
     return null;
   }
@@ -554,9 +580,9 @@ function createTab(initialTarget, engine) {
     iframeEl.className = "browser-frame";
     iframeEl.title = "Proxied browser tab";
     iframeEl.hidden = true;
-    iframeEl.addEventListener("load", () => onFrameLoad(id));
     frameWrap.appendChild(iframeEl);
   }
+  iframeEl.addEventListener("load", () => onFrameLoad(id));
 
   const tab = {
     id,
@@ -827,7 +853,7 @@ function onFrameLoad(id) {
   if (!tab) return;
   setTabLoading(tab, false);
 
-  const decoded = decodeFrameUrl(tab.iframeEl.contentWindow);
+  const decoded = tab.engine === "uv" ? decodeFrameUrl(tab.iframeEl.contentWindow) : null;
   if (decoded) {
     applyDecodedUrl(tab, decoded);
 
@@ -841,7 +867,16 @@ function onFrameLoad(id) {
       // history work, not just address-bar navigations.
       pushHistory(tab, decoded);
     }
+    // Fragment navigation does not reload an iframe; native history traversal
+    // can also change its URL without a new document.
+    const syncLocation = () => {
+      const url = decodeFrameUrl(tab.iframeEl.contentWindow);
+      if (url) { applyDecodedUrl(tab, url); pushHistory(tab, url); }
+    };
+    tab.iframeEl.contentWindow.addEventListener("hashchange", syncLocation);
+    tab.iframeEl.contentWindow.addEventListener("popstate", syncLocation);
   }
+  if (tab.engine === "scramjet" && tab.realUrl) loadFavicon(tab, tab.realUrl);
 
   try {
     const title = tab.iframeEl.contentDocument?.title;

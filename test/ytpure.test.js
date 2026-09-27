@@ -84,6 +84,16 @@ test("choosePreferred picks the best at or under the ceiling", () => {
   assert.equal(P.choosePreferred([], 1080), null);
 });
 
+test("unsupported combined codecs do not hide a playable adaptive quality", () => {
+  const video = {
+    streams: [{ formatId: "bad", height: 360, mime: "video/webm", vcodec: "vp9", acodec: "opus" }],
+    adaptive: info.adaptive,
+  };
+  const list = P.buildQualityList(video, (mime, codec) => !/vp9|opus/.test(codec));
+  assert.equal(list.find(o => o.height === 360).videoId, "134");
+  assert.equal(list.some(o => o.videoId === "bad"), false);
+});
+
 test("driftCorrection only moves audio past the threshold", () => {
   assert.equal(P.driftCorrection(10, 10.2), null);
   assert.equal(P.driftCorrection(10, 10.5), 10);

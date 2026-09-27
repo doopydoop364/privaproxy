@@ -18,11 +18,7 @@ function mountAll(app, server) {
 // across all providers. Call once, after the server starts listening (it
 // needs the server's own origin to test against itself over loopback).
 function startLatencyChecks(origin) {
-  for (const provider of providers) {
-    if (provider.bareServers) {
-      latency.start(provider.bareServers, origin);
-    }
-  }
+  latency.start(providers.flatMap(provider => provider.bareServers || []), origin);
 }
 
 // What the frontend's proxy dropdown renders: one entry per bare backend

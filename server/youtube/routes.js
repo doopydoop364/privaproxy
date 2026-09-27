@@ -4,6 +4,7 @@ const { Readable } = require("stream");
 const yt = require("./ytdlp");
 const hlsLib = require("./hls");
 const sponsorblock = require("./sponsorblock");
+const { cancelBody, readCapped } = require("./upstream");
 
 const router = express.Router();
 
@@ -19,7 +20,9 @@ function boundRange(header, chunk) {
   const m = /^bytes=(\d+)-(\d*)$/.exec(String(header || "").trim());
   if (!m) return null;
   const start = Number(m[1]);
-  const end = m[2] === "" ? start + chunk - 1 : Math.min(Number(m[2]), start + chunk - 1);
+  const requestedEnd = m[2] === "" ? Number.MAX_SAFE_INTEGER : Number(m[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd)) return null;
+  const end = Math.min(requestedEnd, start + Math.min(chunk - 1, Number.MAX_SAFE_INTEGER - start));
   return end >= start ? `bytes=${start}-${end}` : null;
 }
 
@@ -52,8 +55,6 @@ function sendError(res, err) {
 }
 
 // ---------- shared upstream helpers ----------
-
-const cancelBody = (up) => up.body && up.body.cancel().catch(() => {});
 
 // Abort upstream work as soon as the browser goes away (seek, tab change, navigation).
 function abortOnClose(res) {
@@ -93,6 +94,9 @@ function pipeWhole(req, res, first, target, ac) {
   const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(first.headers.get("content-range") || "");
   if (!m || Number(m[1]) !== 0) return pipeUpstream(req, res, first, target.mime || "video/mp4"); // unexpected shape: pass through
   const total = Number(m[3]);
+  const firstEnd = Number(m[2]);
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(firstEnd) || firstEnd >= total)
+    return pipeUpstream(req, res, first, target.mime || "video/mp4");
   res.status(200);
   res.setHeader("content-type", first.headers.get("content-type") || target.mime || "video/mp4");
   res.setHeader("content-length", String(total));
@@ -103,32 +107,33 @@ function pipeWhole(req, res, first, target, ac) {
     return res.end();
   }
   async function* windows() {
-    yield* Readable.fromWeb(first.body);
-    for (let start = Number(m[2]) + 1; start < total; start += ADAPTIVE_CHUNK) {
+    async function* body(up, length) {
+      let received = 0;
+      for await (const chunk of Readable.fromWeb(up.body)) {
+        received += chunk.length;
+        if (received > length) throw new Error("upstream range body was too long");
+        yield chunk;
+      }
+      if (received !== length) throw new Error("upstream range body was truncated");
+    }
+    yield* body(first, firstEnd + 1);
+    for (let start = firstEnd + 1; start < total;) {
       const end = Math.min(total - 1, start + ADAPTIVE_CHUNK - 1);
       const up = await fetch(target.url, { headers: { ...target.headers, Range: `bytes=${start}-${end}` }, signal: ac.signal, redirect: "follow" });
-      if (up.status !== 206) {
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(up.headers.get("content-range") || "");
+      const actualEnd = range && Number(range[2]);
+      if (up.status !== 206 || !range || Number(range[1]) !== start || Number(range[3]) !== total ||
+          !Number.isSafeInteger(actualEnd) || actualEnd < start || actualEnd > end) {
         cancelBody(up);
-        throw new Error(`upstream returned ${up.status} mid-stream`);
+        throw new Error("upstream returned an inconsistent byte range");
       }
-      yield* Readable.fromWeb(up.body);
+      yield* body(up, actualEnd - start + 1);
+      start = actualEnd + 1;
     }
   }
   Readable.from(windows())
     .on("error", () => res.destroy())
     .pipe(res);
-}
-
-// Read an upstream body into memory, refusing anything over `max` bytes.
-async function readCapped(up, max) {
-  const chunks = [];
-  let n = 0;
-  for await (const chunk of Readable.fromWeb(up.body)) {
-    n += chunk.length;
-    if (n > max) return null;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
 }
 
 // Rewrite an upstream m3u8 so every URL in it comes back through /hls/seg/.
@@ -268,7 +273,9 @@ router.get("/stream/:id", async (req, res) => {
     let up;
     try {
       const headers = { ...target.headers };
-      if (target.adaptive) headers.Range = boundRange(req.headers.range, ADAPTIVE_CHUNK) || `bytes=0-${ADAPTIVE_CHUNK - 1}`;
+      if (target.adaptive) headers.Range = req.headers.range
+        ? boundRange(req.headers.range, ADAPTIVE_CHUNK) || req.headers.range
+        : `bytes=0-${ADAPTIVE_CHUNK - 1}`;
       else if (req.headers.range) headers.Range = req.headers.range;
       up = await fetch(target.url, { headers, signal: ac.signal, redirect: "follow" });
     } catch {
@@ -429,11 +436,11 @@ router.get("/channel-image/:id/:kind", async (req, res) => {
     if (!url) return res.status(404).json({ error: "no_image", message: "That channel has no such image." });
     let up;
     try {
-      up = await fetch(url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000), redirect: "error" });
+      up = await fetch(url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.any([abortOnClose(res).signal, AbortSignal.timeout(10000)]), redirect: "error" });
     } catch {
       return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't fetch the image." });
     }
-    const type = up.headers.get("content-type") || "";
+    const type = (up.headers.get("content-type") || "").split(";", 1)[0].trim();
     if (!up.ok || !/^image\/(jpeg|png|webp|gif)$/i.test(type)) {
       cancelBody(up);
       return res.status(502).json({ error: "upstream_error", message: "The image server didn't return an image." });

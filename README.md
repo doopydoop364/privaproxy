@@ -27,7 +27,8 @@ YouTube work is limited to three concurrent yt-dlp processes and 24 waiting
 jobs. Jobs waiting longer than 10 seconds return `503 busy`; disconnected
 requests cancel work once no other request needs it. Configure these limits
 with `YTDLP_CONCURRENCY`, `YTDLP_MAX_QUEUE` (0 disables waiting), and
-`YTDLP_QUEUE_TIMEOUT_MS`.
+`YTDLP_QUEUE_TIMEOUT_MS`. Limits and timeouts must be finite integers;
+invalid settings fall back to their defaults.
 
 The YouTube view additionally needs **`yt-dlp`** installed on the machine
 running the server (on Arch/CachyOS: `sudo pacman -S yt-dlp`). Current
@@ -411,9 +412,10 @@ firefox --headless --no-remote --profile /tmp/privaproxy-firefox --remote-debugg
 
 Then run `node scripts/smoke-firefox.js`. It uses WebDriver BiDi and a temporary
 loopback fixture server to check worker activation, restored tabs, history
-persistence, subscriptions, and failed worker registration without external
+persistence, fragment navigation, subscriptions, startup recovery, saved
+settings, Scramjet titles, and failed worker registration without external
 requests. Add a local MP4 of at least 50 seconds to check actual playback,
-queue advance, and resume:
+queue advance, resume, seeking, and separate audio across a loop:
 
 ```bash
 node scripts/smoke-firefox.js ws://127.0.0.1:9222/session /path/to/test-video.mp4

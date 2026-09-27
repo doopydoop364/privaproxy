@@ -21,6 +21,7 @@
 
 const { spawn } = require("child_process");
 const { scope, createWork, subscribe } = require("./work");
+const { cancelBody, readCapped } = require("./upstream");
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 // Channel ids are always "UC" + 22 chars; playlists are "PL"/"UU"/"OLAK5uy_" + a body.
@@ -37,16 +38,23 @@ const LIST_TTL_MS = 10 * 60 * 1000;
 const MAX_PAGES = { search: 10, related: 10, channel: 10, playlist: 10 };
 const MAX_CAPTION_BYTES = 2 * 1024 * 1024;
 
+function integerSetting(name, fallback, min = 1) {
+  const raw = process.env[name];
+  const value = Number(raw);
+  return raw !== undefined && raw.trim() !== "" && Number.isInteger(value) && value >= min && value <= 2147483647
+    ? value : fallback;
+}
+
 const cfg = () => ({
   bin: process.env.YTDLP_PATH || "yt-dlp",
   jsRuntimes: (process.env.YTDLP_JS_RUNTIMES ?? "node")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
-  timeoutMs: Number(process.env.YTDLP_TIMEOUT_MS) || 45000,
-  concurrency: Math.max(1, Number(process.env.YTDLP_CONCURRENCY) || 3),
-  maxQueue: Math.max(0, Math.floor(Number(process.env.YTDLP_MAX_QUEUE ?? 24)) || 0),
-  queueTimeoutMs: Math.max(1, Number(process.env.YTDLP_QUEUE_TIMEOUT_MS) || 10000),
+  timeoutMs: integerSetting("YTDLP_TIMEOUT_MS", 45000),
+  concurrency: integerSetting("YTDLP_CONCURRENCY", 3),
+  maxQueue: integerSetting("YTDLP_MAX_QUEUE", 24, 0),
+  queueTimeoutMs: integerSetting("YTDLP_QUEUE_TIMEOUT_MS", 10000),
 });
 
 class YtdlpError extends Error {
@@ -421,6 +429,9 @@ function buildVideo(info, stderr) {
       height: f.height || 0,
       fps: f.fps || null,
       ext: f.ext,
+      mime: mimeFor(f, "video"),
+      vcodec: f.vcodec,
+      acodec: f.acodec,
       filesize: f.filesize || f.filesize_approx || null,
     }))
     .sort((a, b) => b.height - a.height || (b.ext === "mp4") - (a.ext === "mp4"));
@@ -528,10 +539,15 @@ async function captionText(id, lang) {
   if (!LANG_RE.test(lang)) throw new YtdlpError("bad_request", "Invalid language.");
   const track = (await loadVideo(id)).captions.get(lang);
   if (!track) return null;
-  const up = await fetch(track.url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000), redirect: "error" });
-  if (!up.ok) throw new YtdlpError("failed", `YouTube returned ${up.status} for the captions.`);
-  const buf = Buffer.from(await up.arrayBuffer());
-  if (buf.length > MAX_CAPTION_BYTES) throw new YtdlpError("failed", "Captions were unexpectedly large.");
+  const timeout = AbortSignal.timeout(15000);
+  const signal = scope.getStore() ? AbortSignal.any([scope.getStore(), timeout]) : timeout;
+  const up = await fetch(track.url, { headers: { "user-agent": "Mozilla/5.0" }, signal, redirect: "error" });
+  if (!up.ok) {
+    await cancelBody(up);
+    throw new YtdlpError("failed", `YouTube returned ${up.status} for the captions.`);
+  }
+  const buf = await readCapped(up, MAX_CAPTION_BYTES);
+  if (!buf) throw new YtdlpError("failed", "Captions were unexpectedly large.");
   const text = buf.toString("utf8");
   if (!text.trimStart().startsWith("WEBVTT")) throw new YtdlpError("failed", "YouTube didn't return WebVTT captions.");
   return text;

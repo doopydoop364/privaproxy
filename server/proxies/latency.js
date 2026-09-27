@@ -42,14 +42,16 @@ const inFlight = new Set();
 // also frees the far side.
 async function measureOne(entry, origin, signal) {
   const ClientV3 = await loadClientV3();
-  const client = new ClientV3(origin + entry.bareEndpoint);
+  const client = new ClientV3(new URL(entry.bareEndpoint, origin).href);
   await client.init();
+  signal.throwIfAborted();
 
   const start = performance.now();
   // We only care whether the round trip through THIS backend completes at
   // all and how long it takes -- even a non-2xx from the test URL still
   // proves the proxy path itself is working, so we don't check res.status.
-  await client.request(new URL(entry.testUrl), "GET", null, {}, signal);
+  const response = await client.request(new URL(entry.testUrl), "GET", null, {}, signal);
+  if (response.body) await response.body.cancel();
   return Math.round(performance.now() - start);
 }
 
@@ -75,11 +77,15 @@ async function checkOne(entry, origin, timeoutMs, measure) {
     }, timeoutMs);
   });
 
+  const measurement = Promise.resolve()
+    .then(() => measure(entry, origin, controller.signal))
+    .catch(() => null); // any failure (even a synchronous throw) -> offline
+  // An implementation may take time to honor an abort. Retain its slot until
+  // it settles so timeouts cannot accumulate overlapping checks.
+  measurement.then(() => inFlight.delete(entry.id));
   try {
     const latencyMs = await Promise.race([
-      Promise.resolve()
-        .then(() => measure(entry, origin, controller.signal))
-        .catch(() => null), // any failure (even a synchronous throw) -> offline
+      measurement,
       timedOut,
     ]);
     status.set(
@@ -90,11 +96,14 @@ async function checkOne(entry, origin, timeoutMs, measure) {
     );
   } finally {
     clearTimeout(timer);
-    inFlight.delete(entry.id);
   }
 }
 
 let started = false;
+function positiveMs(value, fallback) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 && n <= 2147483647 ? n : fallback;
+}
 // options: { intervalMs, timeoutMs, measure } (a bare number is taken as
 // intervalMs). `measure` exists so tests can substitute a fake measurement.
 function start(bareServerEntries, origin, options = {}) {
@@ -102,8 +111,8 @@ function start(bareServerEntries, origin, options = {}) {
   started = true;
 
   const opts = typeof options === "number" ? { intervalMs: options } : options;
-  const intervalMs = opts.intervalMs ?? (Number(process.env.LATENCY_INTERVAL_MS) || DEFAULT_INTERVAL_MS);
-  const timeoutMs = opts.timeoutMs ?? (Number(process.env.LATENCY_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  const intervalMs = positiveMs(opts.intervalMs ?? process.env.LATENCY_INTERVAL_MS, DEFAULT_INTERVAL_MS);
+  const timeoutMs = positiveMs(opts.timeoutMs ?? process.env.LATENCY_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
   const measure = opts.measure || measureOne;
 
   const runAll = () => {

@@ -16,12 +16,21 @@ const CH = "UC" + "a".repeat(22), OTHER = "UC" + "b".repeat(22);
 const item = id => ({ id, title: id, author: "Fixture", duration: 60, uploadedAt: 1700000000, thumbnail: "" });
 let rawNavigations = 0;
 let failScramjet = false;
+let adaptiveFixture = false;
+let proxyFailures = 0;
+let fixtureScramjet = false;
 const app = express();
 const server = http.createServer(app);
-app.get("/api/proxies", (_req, res) => res.json([{ id: "bare-primary", name: "Primary", bareEndpoint: "/bare/", online: true }]));
+app.get("/api/proxies", (_req, res) => {
+  if (proxyFailures > 0) { proxyFailures--; return res.status(503).json({ error: "temporary" }); }
+  res.json([{ id: "bare-primary", name: "Primary", bareEndpoint: "/bare/", online: true }]);
+});
 app.get("/api/youtube/status", (_req, res) => res.json({ ok: true }));
 app.get("/api/youtube/playlist/:id", (_req, res) => res.json({ playlist: { title: "Fixture" }, results: [item(A), item(B)], hasMore: false }));
-app.get("/api/youtube/video/:id", (req, res) => res.json({ ...item(req.params.id), streams: [{ formatId: "18", height: 360, label: "360p", ext: "mp4" }], captions: [], adaptive: { video: [], audio: [] } }));
+app.get("/api/youtube/video/:id", (req, res) => res.json({ ...item(req.params.id), streams: [{ formatId: "18", height: 360, label: "360p", ext: "mp4" }], captions: [], adaptive: adaptiveFixture ? {
+  video: [{ formatId: "137", height: 1080, mime: "video/mp4", vcodec: "avc1.640028" }],
+  audio: [{ formatId: "140", mime: "audio/mp4", acodec: "mp4a.40.2", ext: "m4a" }],
+} : { video: [], audio: [] } }));
 app.get("/api/youtube/stream/:id", (_req, res) => {
   if (process.argv[3]) res.sendFile(path.resolve(process.argv[3]));
   else res.status(404).end();
@@ -30,6 +39,12 @@ for (const route of ["/api/youtube/related/:id", "/api/youtube/home"]) app.get(r
 app.get("/api/youtube/subscriptions", (_req, res) => res.json({ results: [item(A)], hasMore: false }));
 app.get("/scramjet/sw.js", (req, res, next) => {
   if (failScramjet) res.status(404).end();
+  else if (fixtureScramjet) res.type("application/javascript").send(`
+    self.addEventListener('fetch', event => {
+      const html = '<!doctype html><script>const el=window.frameElement; const frame=Object.getOwnPropertySymbols(el).map(s=>el[s]).find(v=>v&&v.frame===el); const event=new Event("urlchange"); event.url=decodeURIComponent(location.pathname.slice("/scramjet/service/".length)); frame.dispatchEvent(event);<\\/script><title>Scramjet fixture title</title><p>Local frame fixture</p>';
+      event.respondWith(Promise.resolve(new Response(html, {headers:{'content-type':'text/html'}})));
+    });
+  `);
   else next();
 });
 app.get("/uv/sw.js", (_req, res) => res.type("application/javascript").send(`
@@ -43,6 +58,8 @@ registry.mountAll(app, server);
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 app.get("/", (req, res) => {
   const bootstrap = `<script>
+    const NativeAudio = window.Audio;
+    window.Audio = function(...args) { const audio = new NativeAudio(...args); window.fixtureAudio = audio; return audio; };
     if (location.search.includes('seed=1')) {
       localStorage.clear();
       localStorage.setItem('browserTabs', JSON.stringify({tabs:[{engine:'uv',url:'https://one.example/'}],activeIndex:0}));
@@ -114,6 +131,11 @@ async function main() {
     await wait("JSON.parse(localStorage.getItem('browserTabs')).tabs[0].url === 'https://three.example/'");
     console.log("PASS: Back/Forward saves the current URL and browser reload restores it.");
 
+    await wait("__uv$config.decodeUrl(document.querySelector('.browser-frame').contentWindow.location.pathname.slice(__uv$config.prefix.length)) === 'https://three.example/' && !document.querySelector('#reloadBtn').title.includes('Stop')");
+    await evaluate("document.querySelector('.browser-frame').contentWindow.location.hash='section'; return true;");
+    await wait("document.querySelector('#urlInput').value === 'https://three.example/#section' && JSON.parse(localStorage.getItem('browserTabs')).tabs[0].url.endsWith('#section')");
+    console.log("PASS: in-page fragment navigation updates the address bar and saved tab.");
+
     await evaluate("document.querySelector('.tab[data-view=\"youtube\"]').click(); document.querySelector('[data-feed=\"subs\"]').click(); return true;");
     await wait("document.querySelector('.yt-feed[data-feed=\"subs\"] .yt-card')");
     await evaluate("document.querySelector('.yt-chip-remove').click(); return true;");
@@ -129,7 +151,38 @@ async function main() {
       await wait(`document.querySelector('#ytVideo').getAttribute('src')?.includes('/${B}?') && document.querySelector('#ytVideo').currentTime >= 35`);
       assert.equal(await evaluate(`return JSON.parse(localStorage.getItem('ytResume'))['${B}'] >= 35;`), true);
       console.log("PASS: real media playback reaches ended, advances the queue and resumes the next video at 35 seconds.");
+
+      await evaluate("const seek=document.querySelector('#ytSeek'); seek.dispatchEvent(new PointerEvent('pointerdown')); seek.dispatchEvent(new PointerEvent('pointerup')); const video=document.querySelector('#ytVideo'); video.currentTime=20; return true;");
+      await wait("Number(document.querySelector('#ytSeek').value) >= 330 && Number(document.querySelector('#ytSeek').value) < 500");
+      console.log("PASS: an unchanged seek gesture releases the progress slider.");
+
+      adaptiveFixture = true;
+      await evaluate("document.querySelector('#ytClose').click(); document.querySelector('#ytSearchInput').value='https://youtu.be/aaaaaaaaaaa'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
+      await wait("document.querySelector('#ytQuality').value === 'a:137' && document.querySelector('#ytVideo').readyState >= 2 && window.fixtureAudio.readyState >= 2");
+      await evaluate("const video=document.querySelector('#ytVideo'); video.muted=true; video.loop=true; video.currentTime=video.duration-0.15; await video.play(); return true;");
+      await wait("document.querySelector('#ytVideo').currentTime < 3 && !document.querySelector('#ytVideo').paused");
+      assert.equal(await evaluate("return window.fixtureAudio.paused;"), false, "looped video left its separate audio paused");
+      console.log("PASS: real adaptive playback keeps its audio playing across a loop.");
     }
+
+    await evaluate("localStorage.setItem('ytVolume',JSON.stringify('corrupt')); return true;");
+    proxyFailures = 1;
+    await navigate(origin + "/");
+    await wait("document.querySelector('#enginePicker option[value=\"uv\"]').textContent === 'Ultraviolet' && document.querySelector('#ytVideo').volume === 1");
+    console.log("PASS: corrupt saved volume is handled, and a failed proxy-list startup recovers automatically.");
+
+    // Keep the real controller/frame, but serve a local document that emits
+    // urlchange before its title is parsed, matching the client injection order.
+    await evaluate("for(const registration of await navigator.serviceWorker.getRegistrations()) if(registration.scope.includes('/scramjet/service/')) await registration.unregister(); return true;");
+    fixtureScramjet = true;
+    await navigate(origin + "/");
+    await wait("document.querySelector('#enginePicker option[value=\"scramjet\"]').textContent === 'Scramjet'");
+    await evaluate("document.querySelector('#enginePicker').value='scramjet'; document.querySelector('#newTabBtn').click(); document.querySelector('#urlInput').value='https://scramjet.example/'; document.querySelector('#browseForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
+    await wait("document.querySelector('.browser-tab.is-active .browser-tab-title')?.textContent === 'Scramjet fixture title'");
+    console.log("PASS: Scramjet refreshes its tab title after the document loads.");
+    await evaluate("document.querySelector('#urlInput').value='http://'; document.querySelector('#browseForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
+    await wait("document.querySelector('#urlInput').value === 'https://duckduckgo.com/html/?q=http%3A%2F%2F' && document.querySelector('#reloadBtn').title === 'Reload'");
+    console.log("PASS: malformed address-bar input does not leave Scramjet stuck loading.");
 
     // Remove the active Scramjet registration so reload must register again.
     await evaluate("for(const registration of await navigator.serviceWorker.getRegistrations()) if(registration.scope.includes('/scramjet/service/')) await registration.unregister(); return true;");
@@ -146,13 +199,13 @@ async function main() {
     ws.close();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    for (const entry of require("../server/proxies/ultraviolet").bareServers) entry.server.close();
+    for (const entry of require("../server/proxies/ultraviolet").bareServers) entry.server?.close();
   }
 }
 main().catch(err => {
   console.error(err);
   server.closeAllConnections();
   server.close();
-  for (const entry of require("../server/proxies/ultraviolet").bareServers) entry.server.close();
+  for (const entry of require("../server/proxies/ultraviolet").bareServers) entry.server?.close();
   process.exitCode = 1;
 });

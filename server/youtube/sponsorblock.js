@@ -6,6 +6,8 @@
 // constant -- nothing from the client picks where this request goes.
 
 const crypto = require("crypto");
+const { cancelBody, readCapped } = require("./upstream");
+const { scope } = require("./work");
 
 const HOST = "https://sponsor.ajay.app";
 const CATEGORIES = ["sponsor", "selfpromo", "interaction", "intro", "outro"];
@@ -33,15 +35,19 @@ async function segmentsFor(id) {
 
   const prefix = crypto.createHash("sha256").update(id).digest("hex").slice(0, 4);
   const url = `${HOST}/api/skipSegments/${prefix}?categories=${encodeURIComponent(JSON.stringify(CATEGORIES))}&actionTypes=${encodeURIComponent('["skip"]')}`;
-  const up = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: "error" });
+  const timeout = AbortSignal.timeout(6000);
+  const signal = scope.getStore() ? AbortSignal.any([scope.getStore(), timeout]) : timeout;
+  const up = await fetch(url, { signal, redirect: "error" });
   let segments = [];
   if (up.status === 404) {
+    await cancelBody(up);
     segments = []; // nothing submitted for any video with this prefix
   } else if (up.ok) {
-    const buf = Buffer.from(await up.arrayBuffer());
-    if (buf.length > MAX_BYTES) throw new Error("SponsorBlock response too large");
+    const buf = await readCapped(up, MAX_BYTES);
+    if (!buf) throw new Error("SponsorBlock response too large");
     segments = pickSegments(JSON.parse(buf.toString("utf8")), id);
   } else {
+    await cancelBody(up);
     throw new Error(`SponsorBlock returned ${up.status}`);
   }
   cache.set(id, { at: Date.now(), segments });

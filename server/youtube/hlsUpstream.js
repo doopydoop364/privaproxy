@@ -48,11 +48,13 @@ function lookup(hostname, options, callback) {
 
 function request(url, { headers, signal }) {
   return new Promise((resolve, reject) => {
+    let deadline;
     const req = https.get(url, {
       headers: { ...headers, "accept-encoding": "identity" }, signal, lookup,
       // Do not reuse sockets across lookups: every new request validates DNS.
       agent: false,
     }, (res) => {
+      clearTimeout(deadline);
       const responseHeaders = new Headers();
       for (const [name, value] of Object.entries(res.headers)) {
         if (value !== undefined) responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
@@ -60,7 +62,11 @@ function request(url, { headers, signal }) {
       resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300,
         headers: responseHeaders, body: Readable.toWeb(res), url: url.href });
     });
-    req.on("error", reject);
+    req.on("error", err => { clearTimeout(deadline); reject(err); });
+    // Socket idle timeouts start after connection; also bound DNS, TLS and
+    // response headers so a stalled connection cannot remain pending forever.
+    deadline = setTimeout(() => req.destroy(new Error("HLS upstream timed out.")), 30000);
+    deadline.unref();
     req.setTimeout(30000, () => req.destroy(new Error("HLS upstream timed out.")));
   });
 }

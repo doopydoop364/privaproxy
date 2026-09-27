@@ -33,7 +33,7 @@ const config = JSON.parse(
 // mounting one here.)
 const bareServers = config.map((entry) => ({
   ...entry,
-  server: createBareServer(entry.bareEndpoint, {
+  server: /^https?:\/\//i.test(entry.bareEndpoint) ? null : createBareServer(entry.bareEndpoint, {
     // By default this rate-limits to 10 concurrent keep-alive connections
     // per IP -- meant to stop abuse on a public deployment, but way too low
     // here: a single page load fires off many parallel sub-requests (HTML,
@@ -76,7 +76,7 @@ module.exports = {
     // its path (e.g. "/bare/..." vs "/bare2/..."); let anything else fall
     // through to Express normally.
     app.use((req, res, next) => {
-      const match = bareServers.find((b) => b.server.shouldRoute(req));
+      const match = bareServers.find((b) => b.server?.shouldRoute(req));
       if (match) return match.server.routeRequest(req, res);
       next();
     });
@@ -84,7 +84,7 @@ module.exports = {
     // Bare servers also need to intercept WebSocket upgrade requests
     // (used for sites that hold live connections).
     server.on("upgrade", (req, socket, head) => {
-      const match = bareServers.find((b) => b.server.shouldRoute(req));
+      const match = bareServers.find((b) => b.server?.shouldRoute(req));
       if (match) match.server.routeUpgrade(req, socket, head);
       else socket.destroy(); // nobody owns this upgrade; don't leave the socket open forever
     });

@@ -24,15 +24,15 @@ function harness(env = {}) {
   };
   const context = vm.createContext({
     require: name => name === "child_process" ? { spawn } : realRequire(name),
-    module: { exports: {} }, Buffer, setTimeout, clearTimeout,
+    module: { exports: {} }, Buffer, setTimeout, clearTimeout, AbortSignal,
     process: { env: { YTDLP_CONCURRENCY: "1", YTDLP_MAX_QUEUE: "2", ...env } },
   });
   vm.runInContext(fs.readFileSync(file, "utf8"), context);
-  const finish = (child, id) => {
-    child.stdout.emit("data", Buffer.from(JSON.stringify({ id, title: id, formats: [] })));
+  const finish = (child, id, extra = {}) => {
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ id, title: id, formats: [], ...extra })));
     child.emit("close", 0);
   };
-  return { yt: context.module.exports, children, finish };
+  return { yt: context.module.exports, children, finish, context };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const A = "aaaaaaaaaaa", B = "bbbbbbbbbbb", C = "ccccccccccc", D = "ddddddddddd";
@@ -123,4 +123,44 @@ test("shared upload-date batches remain active for their remaining subscribers",
   children[0].emit("close", 0);
   assert.equal((await second)[B], 1700000001);
   assert.equal(children.length, 1);
+});
+
+test("invalid concurrency settings retain finite integer process limits", async () => {
+  for (const value of ["Infinity", "2.5", "-1", "not-a-number"]) {
+    const { yt, children, finish } = harness({ YTDLP_CONCURRENCY: value });
+    const jobs = [A, B, C, D].map(id => yt.getVideo(id));
+    await tick();
+    assert.equal(children.length, 3);
+    for (let i = 0; i < 3; i++) finish(children[i], [A, B, C][i]);
+    await Promise.all(jobs.slice(0, 3)); await tick();
+    finish(children[3], D);
+    await jobs[3];
+  }
+});
+
+test("captions enforce a streaming size limit and cancel on requester disconnect", async () => {
+  const { yt, children, finish, context } = harness();
+  const job = yt.getVideo(A);
+  await tick();
+  finish(children[0], A, { subtitles: { en: [{ ext: "vtt", url: "https://www.youtube.com/api/timedtext?v=aaaaaaaaaaa" }] } });
+  await job;
+  let canceled = false;
+  context.fetch = async () => new Response(new ReadableStream({
+    pull(c) { c.enqueue(new Uint8Array(256 * 1024)); },
+    cancel() { canceled = true; },
+  }));
+  await assert.rejects(yt.captionText(A, "en"), err => err.code === "failed" && /large/.test(err.message));
+  assert.equal(canceled, true);
+  const ac = new AbortController();
+  let connected;
+  const started = new Promise(resolve => { connected = resolve; });
+  context.fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    connected();
+  });
+  const pending = yt.withSignal(ac.signal, () => yt.captionText(A, "en"));
+  await started;
+  const rejected = assert.rejects(pending, err => err.name === "AbortError");
+  ac.abort();
+  await rejected;
 });
