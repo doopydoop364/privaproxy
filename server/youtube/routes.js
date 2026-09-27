@@ -24,6 +24,7 @@ function boundRange(header, chunk) {
 }
 
 const STATUS_BY_CODE = {
+  busy: 503,
   bad_id: 400,
   bad_page: 400,
   bad_request: 400,
@@ -38,6 +39,7 @@ const STATUS_BY_CODE = {
 };
 
 function sendError(res, err) {
+  if (res.destroyed) return;
   if (err instanceof yt.YtdlpError) {
     return res.status(STATUS_BY_CODE[err.code] || 502).json({
       error: err.code,
@@ -59,6 +61,10 @@ function abortOnClose(res) {
   res.on("close", () => ac.abort());
   return ac;
 }
+
+router.use((_req, res, next) => {
+  yt.withSignal(abortOnClose(res).signal, next);
+});
 
 // Copy the useful upstream headers and stream the body to the client.
 function pipeUpstream(req, res, up, fallbackType) {
@@ -304,7 +310,7 @@ router.get("/hls/:id/master.m3u8", async (req, res) => {
 
       let up;
       try {
-        up = await fetch(hls.url, { headers: hls.headers, signal: ac.signal, redirect: "follow" });
+        up = await hlsLib.fetchHls(hls.url, { headers: hls.headers, signal: ac.signal });
       } catch {
         if (ac.signal.aborted) return;
         return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't reach YouTube's servers." });
@@ -341,7 +347,7 @@ router.get("/hls/seg/:token", async (req, res) => {
 
     let up;
     try {
-      up = await fetch(entry.url, { headers, signal: ac.signal, redirect: "follow" });
+      up = await hlsLib.fetchHls(entry.url, { headers, signal: ac.signal });
     } catch {
       if (ac.signal.aborted) return;
       return res.status(502).json({ error: "upstream_unreachable", message: "Couldn't reach YouTube's servers." });

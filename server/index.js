@@ -29,9 +29,14 @@ app.use("/vendor/hls/", express.static(path.join(__dirname, "../node_modules/hls
 app.use(express.static(path.join(__dirname, "../public")));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`privaproxy running at http://localhost:${PORT}`);
+const HOST = process.env.HOST || "127.0.0.1";
+server.listen(PORT, HOST, () => {
+  const address = server.address();
+  const host = address.address.includes(":") ? `[${address.address}]` : address.address;
+  console.log(`privaproxy running at http://${host}:${address.port}`);
   // Latency checks hit the server's own bare endpoints over loopback, so
   // this has to start after we're actually listening.
-  proxyRegistry.startLatencyChecks(`http://localhost:${PORT}`);
+  const loopback = address.family === "IPv6" ? "[::1]" : "127.0.0.1";
+  const checkHost = address.address === "0.0.0.0" || address.address === "::" ? loopback : host;
+  proxyRegistry.startLatencyChecks(`http://${checkHost}:${address.port}`);
 });

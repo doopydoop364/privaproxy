@@ -88,6 +88,40 @@ test("loads without errors and shows the home empty state", async () => {
   assert.equal(env.byId.get("ytPip").hidden, false);
 });
 
+test("queue advance preserves the next video's saved resume position", async () => {
+  const env = boot({ ytResume: JSON.stringify({ bbbbbbbbbbb: 35 }) });
+  await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
+  const list = cards(env, "playlist");
+  list[0].querySelector(".yt-card-main").click();
+  list[1].querySelector(".yt-card-queue").click();
+  await tick();
+  const video = env.byId.get("ytVideo");
+  video.duration = 100;
+  video.currentTime = 100;
+  video.paused = true;
+  video.dispatch("ended");
+  await tick();
+  assert.match(video.src, /stream\/bbbbbbbbbbb/);
+  assert.equal(JSON.parse(env.store.get("ytResume")).bbbbbbbbbbb, 35);
+  video.currentTime = 0;
+  video.dispatch("loadedmetadata");
+  assert.equal(video.currentTime, 35);
+});
+
+test("unsubscribing in Subscriptions reloads the remaining channels", async () => {
+  const other = "UC" + "b".repeat(22);
+  const env = boot({ ytSubs: JSON.stringify([{ id: CH, name: "Someone" }, { id: other, name: "Other" }]) });
+  tabBtn(env, "subs").click();
+  await tick();
+  assert.equal(cards(env, "subs").length, 1);
+  feedSection(env, "subs").querySelector(".yt-chip-remove").click();
+  await tick();
+  assert.equal(cards(env, "subs").length, 1);
+  const requests = env.requests.filter(url => url.startsWith("/api/youtube/subscriptions"));
+  assert.equal(requests.length, 2);
+  assert.match(requests[1], new RegExp(`channels=${other}`));
+});
+
 test("Home feed ordering dropdown: hidden outside Home, switches to group=1 for Diverse", async () => {
   const env = boot({
     ytHistory: JSON.stringify([

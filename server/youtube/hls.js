@@ -6,10 +6,10 @@
 // serve is rewritten to /api/youtube/hls/seg/<token>, where <token> is an
 // opaque handle to a URL WE saw inside a manifest fetched from YouTube.
 //
-// SSRF note: the segment route only resolves tokens found in this registry, so
-// there is no way to ask the server to fetch an arbitrary URL.
+// Each URL is restricted to YouTube media hosts; fetchHls validates DNS and redirects.
 
 const crypto = require("crypto");
+const { PlaylistError, validateUrl, fetchHls } = require("./hlsUpstream");
 
 const SEG_PREFIX = "/api/youtube/hls/seg/";
 const TTL_MS = 6 * 60 * 60 * 1000; // YouTube manifest URLs live ~6h
@@ -24,6 +24,7 @@ const registry = new Map(); // token -> { url, headers, exp }
 const tokenFor = (url) => crypto.createHash("sha256").update(url).digest("base64url").slice(0, 24);
 
 function register(url, headers) {
+  url = validateUrl(url).href;
   const token = tokenFor(url);
   registry.delete(token); // re-insert so eviction order is least-recently-registered
   registry.set(token, { url, headers, exp: Date.now() + TTL_MS });
@@ -42,12 +43,9 @@ function lookup(token) {
   return entry;
 }
 
-class PlaylistError extends Error {}
-
 function absolute(ref, baseUrl) {
-  const u = new URL(ref, baseUrl);
-  if (u.protocol !== "https:" && u.protocol !== "http:") throw new PlaylistError(`unsupported URL scheme in playlist: ${u.protocol}`);
-  return u.toString();
+  try { return validateUrl(new URL(ref, baseUrl).href).href; }
+  catch { throw new PlaylistError("Unsupported URL in HLS playlist."); }
 }
 
 // Rewrites every URI in an m3u8 (segment/variant lines and URI="..." attributes
@@ -82,6 +80,7 @@ function isPlaylist(contentType, url) {
 
 module.exports = {
   SEG_PREFIX, MAX_PLAYLIST_BYTES, PlaylistError,
+  fetchHls,
   register, lookup, rewritePlaylist, isPlaylist,
   _size: () => registry.size,
 };

@@ -110,20 +110,60 @@ async function setupProxy() {
   await refreshProxies(); // renders the list; can't switch yet, bare-mux isn't connected
 
   bareMuxConnection = new BareMuxConnection("/baremux/worker.js");
-  await refreshProxies(); // now applies the selected backend
-
-  if ("serviceWorker" in navigator) {
-    await navigator.serviceWorker
-      .register("/uv/sw.js", { scope: __uv$config.prefix })
-      .catch((err) => console.error("Service worker registration failed:", err));
-  }
+  if (!await refreshProxies()) throw new Error("No proxy backend is available.");
 
   // Keeps the latency figures fresh, and moves the transport if the selected
   // backend went offline and the dropdown fell back to another one. Matches how often
   // the server re-measures (DEFAULT_INTERVAL_MS in server/proxies/latency.js).
   setInterval(refreshProxies, PROXY_REFRESH_MS);
 }
-setupProxy();
+const transportReady = setupProxy().then(() => true).catch((err) => {
+  console.error("Proxy setup failed:", err);
+  proxyDot.className = "proxy-dot offline";
+  return false;
+});
+
+// Registration can resolve while the worker is still installing. These workers
+// control their iframe scopes, so navigator.serviceWorker.ready on the shell
+// (outside either scope) is not a readiness check for them.
+async function registerWorker(script, scope) {
+  if (!("serviceWorker" in navigator)) throw new Error("Service workers are unavailable.");
+  const registration = await navigator.serviceWorker.register(script, { scope });
+  const worker = registration.active || registration.installing || registration.waiting;
+  if (!worker) throw new Error("Service worker installation did not start.");
+  if (worker.state === "activated") return;
+  await new Promise((resolve, reject) => {
+    const finish = (err) => {
+      clearTimeout(timer);
+      worker.removeEventListener("statechange", check);
+      err ? reject(err) : resolve();
+    };
+    const check = () => {
+      if (worker.state === "activated") finish();
+      else if (worker.state === "redundant") finish(new Error("Service worker installation failed."));
+    };
+    const timer = setTimeout(() => finish(new Error("Service worker installation timed out.")), 15000);
+    worker.addEventListener("statechange", check);
+    check();
+  });
+}
+
+const uvOption = enginePicker.querySelector('option[value="uv"]');
+uvOption.disabled = true;
+uvOption.textContent = "Ultraviolet (loading…)";
+const uvReady = (async () => {
+  try {
+    if (!await transportReady) throw new Error("Proxy transport is unavailable.");
+    await registerWorker("/uv/sw.js", __uv$config.prefix);
+    uvOption.disabled = false;
+    uvOption.textContent = "Ultraviolet";
+    return true;
+  } catch (err) {
+    console.error("Ultraviolet setup failed:", err);
+    uvOption.textContent = "Ultraviolet (unavailable)";
+    return false;
+  }
+})();
 
 // ---------- Scramjet engine setup ----------
 // Scramjet is a genuinely different rewriting engine (Rust/WASM instead of
@@ -138,6 +178,7 @@ scramjetOption.textContent = "Scramjet (loading…)";
 
 async function setupScramjet() {
   try {
+    if (!await transportReady) throw new Error("Proxy transport is unavailable.");
     const { ScramjetController } = $scramjetLoadController();
     scramjetController = new ScramjetController({
       prefix: "/scramjet/service/",
@@ -149,16 +190,15 @@ async function setupScramjet() {
     });
     await scramjetController.init();
 
-    if ("serviceWorker" in navigator) {
-      await navigator.serviceWorker
-        .register("/scramjet/sw.js", { scope: "/scramjet/service/" })
-        .catch((err) => console.error("Scramjet service worker registration failed:", err));
-    }
+    await registerWorker("/scramjet/sw.js", "/scramjet/service/");
     scramjetOption.disabled = false;
     scramjetOption.textContent = "Scramjet";
+    return true;
   } catch (err) {
     console.error("Scramjet setup failed:", err);
     scramjetOption.textContent = "Scramjet (unavailable)";
+    scramjetController = null;
+    return false;
   }
 }
 const scramjetReady = setupScramjet(); // awaited before restoring a saved Scramjet tab (see restoreTabs)
@@ -334,6 +374,7 @@ async function restoreTabs() {
   // live choice, so this wait is worth it here even though picking Scramjet
   // from the dropdown itself doesn't block on it.
   if (saved.tabs.some((t) => t.engine === "scramjet")) await scramjetReady;
+  await uvReady;
 
   const restored = saved.tabs.map((t) => {
     // Scramjet failed to set up since this was saved: fall back to Ultraviolet
@@ -354,6 +395,7 @@ function applyDecodedUrl(tab, decoded) {
     updateBookmarkBtn();
   }
   loadFavicon(tab, decoded); // fire-and-forget; updates the pill once it resolves
+  saveTabs();
 }
 
 // ---------- Bookmarks + new-tab page ----------
@@ -688,11 +730,14 @@ async function loadFavicon(tab, decodedUrl) {
   }
 }
 
-function navigateTab(id, rawTarget) {
+async function navigateTab(id, rawTarget) {
   const tab = getTab(id);
   if (!tab) return;
   const target = normalizeUrl(rawTarget);
   if (!target) return;
+  // Also gates early address-bar submissions and bookmarks, not just restoration.
+  const ready = await (tab.engine === "scramjet" ? scramjetReady : uvReady);
+  if (!ready || getTab(id) !== tab) return;
 
   tab.tabEl.querySelector(".browser-tab-title").textContent = hostnameOf(target);
   setTabFavicon(tab, DEFAULT_FAVICON);
@@ -754,6 +799,7 @@ function goHistory(tab, direction) {
     tab.iframeEl.src = __uv$config.prefix + __uv$config.encodeUrl(target);
   }
   tab.realUrl = target;
+  saveTabs();
 
   if (tab.id === activeTabId) {
     urlInput.value = target;

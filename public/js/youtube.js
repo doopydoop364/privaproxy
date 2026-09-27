@@ -415,7 +415,10 @@
     store.set(SUBS_KEY, next);
     feeds.subs.sig = null;
     syncSubButtons();
-    if (activeFeed === "subs") ensureSubs();
+    if (activeFeed === "subs") {
+      ensureSubs();
+      kickFeed(feeds.subs);
+    }
   }
 
   // Keeps every Subscribe button (player + channel page) in step with the saved list.
@@ -1151,6 +1154,8 @@
   video.addEventListener("durationchange", updateProgress);
   video.addEventListener("ended", () => {
     syncPlayIcon();
+    // Clear the finished video's resume entry before playNext changes current.entry.
+    if (current.entry) store.set(RESUME_KEY, updateResume(store.get(RESUME_KEY, {}), current.entry.id, 0, 0));
     if (queue.length) playNext();
   });
   video.addEventListener("error", () => {
@@ -1452,9 +1457,6 @@
   }
   video.addEventListener("timeupdate", () => saveResume(false));
   video.addEventListener("pause", () => saveResume(true));
-  video.addEventListener("ended", () => {
-    if (current.entry) store.set(RESUME_KEY, updateResume(store.get(RESUME_KEY, {}), current.entry.id, 0, 0));
-  });
   window.addEventListener("pagehide", () => saveResume(true));
 
   // ---------- loop, picture-in-picture, theater mode ----------

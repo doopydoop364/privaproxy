@@ -16,8 +16,11 @@
 //                       set to "" to pass none, e.g. "deno,node" for both)
 //   YTDLP_TIMEOUT_MS    per-invocation timeout              (default 45000)
 //   YTDLP_CONCURRENCY   max simultaneous yt-dlp processes   (default 3)
+//   YTDLP_MAX_QUEUE     max waiting jobs                   (default 24)
+//   YTDLP_QUEUE_TIMEOUT_MS max time spent waiting          (default 10000)
 
 const { spawn } = require("child_process");
+const { scope, createWork, subscribe } = require("./work");
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 // Channel ids are always "UC" + 22 chars; playlists are "PL"/"UU"/"OLAK5uy_" + a body.
@@ -42,6 +45,8 @@ const cfg = () => ({
     .filter(Boolean),
   timeoutMs: Number(process.env.YTDLP_TIMEOUT_MS) || 45000,
   concurrency: Math.max(1, Number(process.env.YTDLP_CONCURRENCY) || 3),
+  maxQueue: Math.max(0, Math.floor(Number(process.env.YTDLP_MAX_QUEUE ?? 24)) || 0),
+  queueTimeoutMs: Math.max(1, Number(process.env.YTDLP_QUEUE_TIMEOUT_MS) || 10000),
 });
 
 class YtdlpError extends Error {
@@ -91,12 +96,33 @@ let active = 0;
 const waiting = []; // normal-priority waiters (playback, lists the viewer asked for)
 const waitingLow = []; // background work (upload dates, channel images): only when nothing else waits
 
-function acquire(low = false) {
+function acquire(low = false, signal = scope.getStore()) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
   if (active < cfg().concurrency) {
     active++;
     return Promise.resolve();
   }
-  return new Promise((resolve) => (low ? waitingLow : waiting).push(resolve));
+  if (waiting.length + waitingLow.length >= cfg().maxQueue)
+    return Promise.reject(new YtdlpError("busy", "The YouTube server is busy. Try again shortly."));
+  const queue = low ? waitingLow : waiting;
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+    };
+    const remove = (err) => {
+      const i = queue.indexOf(waiter);
+      if (i === -1) return;
+      queue.splice(i, 1);
+      cleanup();
+      reject(err);
+    };
+    const cancel = () => remove(signal.reason);
+    const waiter = () => { cleanup(); resolve(); };
+    const timer = setTimeout(() => remove(new YtdlpError("busy", "The YouTube request waited too long. Try again shortly.")), cfg().queueTimeoutMs);
+    signal?.addEventListener("abort", cancel, { once: true });
+    queue.push(waiter);
+  });
 }
 
 function release() {
@@ -105,8 +131,9 @@ function release() {
   else active--;
 }
 
-function runOnce(c, args, timeoutMs, tolerant = false) {
+function runOnce(c, args, timeoutMs, tolerant = false, signal = scope.getStore()) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
     let child;
     try {
       child = spawn(c.bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -126,8 +153,12 @@ function runOnce(c, args, timeoutMs, tolerant = false) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       fn(value);
     };
+
+    const cancel = () => child.kill("SIGKILL");
+    signal?.addEventListener("abort", cancel, { once: true });
 
     timer = setTimeout(() => {
       timedOut = true;
@@ -148,6 +179,7 @@ function runOnce(c, args, timeoutMs, tolerant = false) {
     });
     child.on("error", (e) => finish(reject, spawnError(e)));
     child.on("close", (code) => {
+      if (signal?.aborted) return finish(reject, signal.reason);
       if (timedOut)
         return finish(reject, new YtdlpError("timeout", `yt-dlp took longer than ${+(timeoutMs / 1000).toFixed(1)}s and was stopped.`));
       if (tooBig)
@@ -193,20 +225,20 @@ function makeMemo(ttlMs, maxEntries) {
   return {
     get(key, fn) {
       const hit = map.get(key);
-      if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
-      const promise = fn();
-      const entry = { at: Date.now(), promise };
+      if (hit && !hit.work.controller.signal.aborted && Date.now() - hit.at < ttlMs) return subscribe(hit.work);
+      const work = createWork(fn);
+      const entry = { at: Date.now(), work };
       map.set(key, entry);
-      promise.catch(() => {
+      work.promise.catch(() => {
         if (map.get(key) === entry) map.delete(key); // never cache failures
       });
       while (map.size > maxEntries) map.delete(map.keys().next().value);
-      return promise;
+      return subscribe(work);
     },
     // The cached (possibly still-pending) promise for `key`, without starting work.
     peek(key) {
       const hit = map.get(key);
-      return hit && Date.now() - hit.at < ttlMs ? hit.promise : undefined;
+      return hit && !hit.work.controller.signal.aborted && Date.now() - hit.at < ttlMs ? subscribe(hit.work) : undefined;
     },
     delete: (key) => map.delete(key),
     clear: () => map.clear(),
@@ -612,7 +644,7 @@ async function channelImageUrl(id, kind) {
 
 // ---------- upload dates for videos that only appeared in a list ----------
 
-const dateCache = new Map(); // video id -> Promise<epoch seconds | null>
+const dateCache = new Map(); // video id -> { work, promise: Promise<epoch seconds | null> }
 const DATE_BATCH = 12;
 
 // { id: epochSeconds } for the ids we could find out. One yt-dlp process per batch, at low
@@ -622,10 +654,10 @@ async function uploadDates(ids) {
   if (!unique.every((id) => ID_RE.test(id))) throw new YtdlpError("bad_id", "Invalid video id.");
   if (unique.length > DATE_BATCH) throw new YtdlpError("bad_request", `At most ${DATE_BATCH} ids.`);
 
-  const missing = unique.filter((id) => !dateCache.has(id));
+  const missing = unique.filter((id) => !dateCache.has(id) || dateCache.get(id).work.controller.signal.aborted);
   if (missing.length) {
     const c = cfg();
-    const batch = run([
+    const work = createWork(() => run([
       "--skip-download", "--no-warnings", "--ignore-errors", "--no-playlist",
       "--print", "%(id)s|%(timestamp)s|%(upload_date)s",
       "--extractor-args", "youtube:player_skip=js,configs",
@@ -645,17 +677,19 @@ async function uploadDates(ids) {
         found.set(id, Number.isFinite(t) && ts !== "NA" ? t : m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000 : null);
       }
       return found;
-    });
+    }));
     for (const id of missing) {
-      const p = batch.then((found) => found.get(id) ?? null);
-      dateCache.set(id, p);
-      p.catch(() => dateCache.get(id) === p && dateCache.delete(id)); // never cache failures
+      const promise = work.promise.then((found) => found.get(id) ?? null);
+      const entry = { work, promise };
+      dateCache.set(id, entry);
+      promise.catch(() => dateCache.get(id) === entry && dateCache.delete(id)); // never cache failures
     }
     while (dateCache.size > 4000) dateCache.delete(dateCache.keys().next().value);
   }
   const out = {};
   await Promise.all(unique.map(async (id) => {
-    const t = await dateCache.get(id);
+    const entry = dateCache.get(id);
+    const t = await subscribe(entry.work, entry.promise);
     if (Number.isFinite(t)) out[id] = t;
   }));
   return out;
@@ -710,6 +744,7 @@ async function status() {
 }
 
 module.exports = {
+  withSignal: (signal, fn) => scope.run(signal, fn),
   YtdlpError, ID_RE, CHANNEL_RE, PLAYLIST_RE,
   search, related, channel, playlist, channelImageUrl, uploadDates, DATE_BATCH, getVideo, resolveStream, resolveHls, captionText, invalidateVideo, status,
   _channelImagePath: channelImagePath, _CHANNEL_IMG_RE: CHANNEL_IMG_RE, _buildVideo: buildVideo, _pickChannelArt: pickChannelArt, _normalizeEntry: normalizeEntry, _originalLanguageOnly: originalLanguageOnly,

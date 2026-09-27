@@ -18,6 +18,17 @@ npm start
 
 Then open `http://localhost:3000`.
 
+The server binds to `127.0.0.1` by default. Set `HOST` explicitly to change the
+bind address (for example, `HOST=::1` for IPv6 loopback). Binding to a LAN or
+wildcard address makes the unauthenticated proxy accessible to that network;
+only do that when you intend to share it and have appropriate access controls.
+
+YouTube work is limited to three concurrent yt-dlp processes and 24 waiting
+jobs. Jobs waiting longer than 10 seconds return `503 busy`; disconnected
+requests cancel work once no other request needs it. Configure these limits
+with `YTDLP_CONCURRENCY`, `YTDLP_MAX_QUEUE` (0 disables waiting), and
+`YTDLP_QUEUE_TIMEOUT_MS`.
+
 The YouTube view additionally needs **`yt-dlp`** installed on the machine
 running the server (on Arch/CachyOS: `sudo pacman -S yt-dlp`). Current
 `yt-dlp` needs a JavaScript runtime to get full YouTube support; the server
@@ -256,7 +267,9 @@ backed by a local `yt-dlp`, not by a public site or third-party API.
   headers yt-dlp says the URLs need), so every URL inside a playlist is
   rewritten to `/hls/seg/<token>`. Tokens are opaque handles to URLs *we saw
   inside a manifest*; there is no endpoint that fetches a caller-supplied
-  URL. Playlists over 8 MB, playlists containing non-http(s) URLs, and
+  URL. Destinations and redirects must use HTTPS on `googlevideo.com`
+  hosts; each connection rejects non-public DNS addresses.
+  Playlists over 8 MB, playlists containing unsupported URLs, and
   "playlists" that are really HTML error pages are refused. When a video
   has HLS variants from several clients, the master offering the tallest
   video is used.
@@ -388,6 +401,23 @@ checks wiring and error-free execution; it cannot decode media, so real
 playback still needs checking in a browser. With a server running, you can also
 try `node scripts/smoke-live.js http://localhost:3000` to drive the client
 against live YouTube.
+
+For Firefox checks, start an isolated headless browser in a separate terminal:
+
+```bash
+mkdir -p /tmp/privaproxy-firefox
+firefox --headless --no-remote --profile /tmp/privaproxy-firefox --remote-debugging-port 9222 about:blank
+```
+
+Then run `node scripts/smoke-firefox.js`. It uses WebDriver BiDi and a temporary
+loopback fixture server to check worker activation, restored tabs, history
+persistence, subscriptions, and failed worker registration without external
+requests. Add a local MP4 of at least 50 seconds to check actual playback,
+queue advance, and resume:
+
+```bash
+node scripts/smoke-firefox.js ws://127.0.0.1:9222/session /path/to/test-video.mp4
+```
 
 ## A note on responsible use
 

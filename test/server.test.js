@@ -122,14 +122,13 @@ test("sponsorblock keeps only well-formed skip segments for the requested video"
 });
 
 test("hls playlists are rewritten through tokens and refuse non-http URLs", () => {
-  const text = '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXT-X-KEY:METHOD=AES-128,URI="data:text/plain;base64,AAAA"\nseg1.ts\nhttps://cdn.example/seg2.ts\n';
-  const out = hls.rewritePlaylist(text, "https://host.example/a/b.m3u8", {});
-  assert.equal(out.includes("host.example"), false);
-  assert.equal(out.includes("cdn.example"), false);
+  const text = '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXT-X-KEY:METHOD=AES-128,URI="data:text/plain;base64,AAAA"\nseg1.ts\nhttps://r2.googlevideo.com/seg2.ts\n';
+  const out = hls.rewritePlaylist(text, "https://manifest.googlevideo.com/a/b.m3u8", {});
+  assert.equal(out.includes("googlevideo.com"), false);
   const tokens = [...out.matchAll(/\/api\/youtube\/hls\/seg\/([A-Za-z0-9_-]{24})/g)].map((m) => m[1]);
   assert.equal(tokens.length, 3);
-  assert.equal(hls.lookup(tokens[0]).url, "https://host.example/a/init.mp4");
-  assert.equal(hls.lookup(tokens[2]).url, "https://cdn.example/seg2.ts");
+  assert.equal(hls.lookup(tokens[0]).url, "https://manifest.googlevideo.com/a/init.mp4");
+  assert.equal(hls.lookup(tokens[2]).url, "https://r2.googlevideo.com/seg2.ts");
   assert.equal(hls.lookup("A".repeat(24)), null);
   assert.equal(hls.lookup("short"), null);
   assert.throws(() => hls.rewritePlaylist("#EXTM3U\nfile:///etc/passwd\n", "https://h.example/x.m3u8", {}), hls.PlaylistError);
