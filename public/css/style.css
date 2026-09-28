@@ -1101,3 +1101,8 @@ button {
   .topbar { flex-wrap: wrap; gap: 10px; }
   .tabs { order: 3; width: 100%; }
 }
+
+.yt-recommendation-settings { flex-basis: 100%; padding: 8px 0; }
+.yt-recommendation-settings summary { cursor: pointer; margin-bottom: 8px; }
+.yt-recommendation-settings .yt-action-btn { margin: 8px 8px 0 0; }
+.yt-learning-option { display: flex; align-items: center; gap: 8px; margin: 8px 0; }

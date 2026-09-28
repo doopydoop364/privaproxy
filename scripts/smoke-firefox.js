@@ -13,7 +13,7 @@ const registry = require("../server/proxies/registry");
 
 const A = "aaaaaaaaaaa", B = "bbbbbbbbbbb";
 const CH = "UC" + "a".repeat(22), OTHER = "UC" + "b".repeat(22);
-const item = id => ({ id, title: id, author: "Fixture", duration: 60, uploadedAt: 1700000000, thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` });
+const item = id => ({ id, title: id, author: "Fixture", channelId: CH, duration: 60, uploadedAt: 1700000000, thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` });
 let rawNavigations = 0;
 let failScramjet = false;
 let adaptiveFixture = false;
@@ -30,6 +30,8 @@ app.get("/api/proxies", (_req, res) => {
 app.get("/api/auth/status", (_req, res) => { statusChecks++; res.json({ enabled: false }); });
 app.get("/api/youtube/status", (_req, res) => toolsUnavailable ? res.status(503).json({ error: "unavailable" }) : res.json({ ok: true }));
 app.get("/api/youtube/thumbnail/:id/:size.jpg", (_req, res) => res.type("png").send(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64")));
+app.get("/api/youtube/channel-image/:id/avatar", (_req, res) => res.type("png").send(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64")));
+app.get("/api/youtube/channel/:id", (req, res) => res.json({ results: [{ ...item("ddddddddddd"), channelId: req.params.id }], hasMore: false }));
 app.get("/api/youtube/playlist/:id", (_req, res) => res.json({ playlist: { title: "Fixture" }, results: [item(A), item(B)], hasMore: false }));
 app.get("/api/youtube/video/:id", (req, res) => res.json({ ...item(req.params.id), streams: [{ formatId: "18", height: 360, label: "360p", ext: "mp4" }], captions: [], adaptive: adaptiveFixture ? {
   video: [{ formatId: "137", height: 1080, mime: "video/mp4", vcodec: "avc1.640028" }],
@@ -113,7 +115,10 @@ async function main() {
     const wait = async expression => {
       const start = Date.now();
       while (!await evaluate(`return !!(${expression});`)) {
-        if (Date.now() - start > 15000) throw new Error(`Browser condition timed out: ${expression}`);
+        if (Date.now() - start > 15000) {
+          const media = await evaluate("const v=document.querySelector('#ytVideo'), a=window.fixtureAudio; return {video:{time:v?.currentTime, duration:v?.duration, paused:v?.paused, state:v?.readyState, loop:v?.loop}, audio:{time:a?.currentTime,paused:a?.paused,state:a?.readyState}, quality:document.querySelector('#ytQuality')?.value};");
+          throw new Error(`Browser condition timed out: ${expression}; media: ${JSON.stringify(media)}`);
+        }
         await new Promise(resolve => setTimeout(resolve, 50));
       }
     };
@@ -183,6 +188,26 @@ async function main() {
     console.log("PASS: status pause, manual refresh, interval preference and hidden-page suspension work in Firefox.");
 
     recommendationFixture = true;
+    await evaluate("for (const key of ['ytHistory','ytRecommendations','ytSubs','ytSavedLists','ytChannelInfo']) localStorage.removeItem(key); document.querySelector('[data-feed=\"home\"]').click(); const select=document.querySelector('#ytHomeAlgo'); select.value='complex'; select.dispatchEvent(new Event('change')); return true;");
+    await wait("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-feed-status').textContent.includes(\"once you've watched\")");
+    assert.equal(await evaluate("return [...document.querySelectorAll('.yt-learning-option input')].every(c=>c.disabled&&!c.checked);"), true);
+    await evaluate("document.querySelector('#ytSearchInput').value='astronomy telescopes'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
+    await wait("document.querySelector('.yt-feed[data-feed=\"results\"] .yt-avatar-sm')?.naturalWidth > 0");
+    assert.equal(await evaluate("return localStorage.getItem('ytHistory');"), null);
+    await evaluate("document.querySelector('[data-feed=\"home\"]').click(); return true;");
+    await wait("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-card-meta[data-id=\"ttttttttttt\"]')");
+    await evaluate("[...document.querySelectorAll('.yt-feed[data-feed=\"home\"] button')].find(b=>b.textContent==='Clear search interests').click(); return true;");
+    await wait("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-feed-status').textContent.includes(\"once you've watched\")");
+    console.log("PASS: empty Complex prompts, search-driven updates, new-channel avatars and learning gates work in Firefox.");
+    await evaluate("const state={stats:{},feedback:{},examples:[]}; for(let i=0;i<120;i++){const id=String(i).padStart(11,'0'); state.stats[id]={seconds:40,duration:60,impressions:5}; if(i<20)state.feedback[id]={value:i%2?'more':'less'}; state.examples.push({id,features:[0.5,i%2,0.2,0,0,0.3,0,1],watchReward:i%2});} localStorage.setItem('ytRecommendations',JSON.stringify(state)); document.querySelector('[data-feed=\"home\"]').click(); return true;");
+    await wait("[...document.querySelectorAll('.yt-learning-option input')].every(c=>!c.disabled&&!c.checked)");
+    await evaluate("document.querySelector('.yt-recommendation-settings').open=true; const checkbox=document.querySelector('.yt-learning-option input'); checkbox.checked=true; checkbox.dispatchEvent(new Event('change')); return true;");
+    await wait("document.querySelector('.yt-recommendation-settings').textContent.includes('active locally')");
+    assert.equal(await evaluate("return JSON.parse(localStorage.getItem('ytRecommendations')).models.bandit;"), true);
+    assert.equal(await evaluate("return document.querySelector('.yt-recommendation-settings').open;"), true);
+    await evaluate("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-action-btn').click(); return true;");
+    await wait("[...document.querySelectorAll('.yt-learning-option input')].every(c=>c.disabled&&!c.checked)");
+    console.log("PASS: useful training data unlocks local learning; opting in activates it and reset disables it.");
     await evaluate("localStorage.setItem('ytHistory',JSON.stringify([{id:'ccccccccccc',title:'Space science',channelId:'" + CH + "'}])); document.querySelector('[data-feed=\"home\"]').click(); const select=document.querySelector('#ytHomeAlgo'); select.value='complex'; select.dispatchEvent(new Event('change')); return true;");
     await wait("document.querySelectorAll('.yt-feed[data-feed=\"home\"] .yt-card-feedback').length >= 3");
     assert.equal(await evaluate("return document.querySelector('#ytHomeAlgo option[value=\"complex\"]').textContent;"), "Complex");
@@ -196,6 +221,9 @@ async function main() {
     await evaluate("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-action-btn').click(); return true;");
     await wait(`document.querySelector('.yt-feed[data-feed="home"] .yt-card-meta[data-id="${dismissed}"]')`);
     console.log("PASS: Complex combines candidates, counts visible impressions, persists feedback and resets it in real Firefox.");
+    await evaluate("document.querySelector('#ytClearHistory').click(); return true;");
+    await wait("!document.querySelector('.yt-feed[data-feed=\"home\"] .yt-card') && document.querySelector('.yt-feed[data-feed=\"home\"] .yt-feed-status').textContent.includes(\"once you've watched\")");
+    console.log("PASS: clearing all watch/recommendation data restores the Complex empty prompt in Firefox.");
     await evaluate("const select=document.querySelector('#ytHomeAlgo'); select.value='balanced'; select.dispatchEvent(new Event('change')); return true;");
     recommendationFixture = false;
 

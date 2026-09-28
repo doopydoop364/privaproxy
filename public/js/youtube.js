@@ -192,6 +192,7 @@
   let activeFeed = "home";
   const impressionCards = new WeakMap();
   const impressionObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(entries => {
+    let changed = false;
     for (const entry of entries) {
       const meta = impressionCards.get(entry.target);
       if (!entry.isIntersecting || (entry.intersectionRatio !== undefined && entry.intersectionRatio < 0.5) ||
@@ -200,8 +201,10 @@
       impressionObserver.unobserve(entry.target);
       if (meta.feed.impressions.has(meta.id)) continue;
       meta.feed.impressions.add(meta.id);
-      store.set(REC_KEY, rec.recordImpression(readRecommendations(), meta.id));
+      store.set(REC_KEY, rec.recordImpression(readRecommendations(), meta.id, Date.now(), meta.features, meta.channelId));
+      changed = true;
     }
+    if (changed) updateLearningControls();
   }, { root: view, threshold: 0.5 }) : null;
 
   const observer =
@@ -211,7 +214,7 @@
             for (const entry of entries) {
               if (!entry.isIntersecting) continue;
               const feed = feedBySentinel.get(entry.target);
-              if (feed) loadMore(feed);
+              if (feed && !feed.section.hidden && view.classList.contains("is-active")) loadMore(feed);
             }
           },
           { root: view, rootMargin: "0px 0px 800px 0px" } // start loading before the end is reached
@@ -271,7 +274,7 @@
     feed.items = [];
     feed.grid.replaceChildren();
     setStatus(feed, "");
-    if (!fetchPage) return;
+    if (!fetchPage) { setStatus(feed, feed.emptyText); return; }
     if (autoload) loadMore(feed);
     else if (!observer) setStatus(feed, "", { button: "Load more" });
   }
@@ -348,34 +351,27 @@
     const algo = homeAlgorithm();
     const history = readHistory(), state = readRecommendations();
     const seeds = algo === "complex" ? rec.selectSeeds(history, state).map(h => h.id) : homeSeeds();
-    const subscriptions = readSubs().filter(c => !state.blockedChannels.includes(c.id)).slice(0, 2);
+    const subscriptions = rec.selectSubscriptions(readSubs(), history, state);
+    const query = algo === "complex" ? rec.topicQuery(history, state) : "";
     const sig = `${seeds.join(",")}:${algo}` + (algo === "complex" ? JSON.stringify([history, state.feedback, state.blockedChannels,
-      Object.entries(state.stats).filter(([, s]) => s.seconds > 0).map(([id, s]) => [id, s.seconds]), subscriptions, readSavedLists()]) : "");
+      Object.entries(state.stats).filter(([, s]) => s.seconds > 0).map(([id, s]) => [id, s.seconds]), readSubs(), subscriptions, readSavedLists(), state.searches, state.models]) : "");
     if (feed.sig === sig) return; // nothing watched, and no ordering change, since we last built it
     feed.sig = sig;
+    const settingsOpen = !!feed.head.querySelector(".yt-recommendation-settings")?.open;
     feed.head.replaceChildren();
+    feed.learningControls = null;
     if (algo === "complex") {
-      const hint = el("p", "yt-hint", "Ranked in this browser from your watches, interests and feedback. Learning models are disabled.");
-      const reset = el("button", "yt-action-btn", "Reset recommendation data");
-      reset.type = "button";
-      reset.addEventListener("click", () => {
-        watchSession = null;
-        store.set(REC_KEY, {});
-        feed.sig = null;
-        ensureHome(); kickFeed(feed);
-      });
-      feed.head.append(hint, reset);
+      renderRecommendationControls(feed, state, settingsOpen);
     }
-    if (!seeds.length && !(algo === "complex" && subscriptions.length)) {
-      resetFeed(feed, { fetchPage: null });
-      setStatus(feed, HOME_EMPTY_TEXT);
+    if (!seeds.length && !(algo === "complex" && (subscriptions.length || query))) {
+      resetFeed(feed, { fetchPage: null, emptyText: HOME_EMPTY_TEXT });
       return;
     }
     const watched = new Set(readHistory().map((h) => h.id));
     const seedParam = seeds.map(encodeURIComponent).join(",");
     resetFeed(feed, {
       fetchPage:
-        algo === "complex" ? complexFetcher(seeds, subscriptions, rec.topicQuery(history, state)) : algo === "balanced"
+        algo === "complex" ? complexFetcher(seeds, subscriptions, query) : algo === "balanced"
           ? (page) => api(`/api/youtube/home?seeds=${seedParam}&page=${page}`)
           : async (page) => {
               const data = await api(`/api/youtube/home?seeds=${seedParam}&page=${page}&group=1`);
@@ -387,16 +383,112 @@
     });
   }
 
-  // At most four Mixes, two channels and one topic search per page. Existing API
+  function refreshRecommendations(force = false) {
+    if (!feeds.home) return;
+    if (force) feeds.home.sig = null;
+    const generation = feeds.home.gen;
+    ensureHome();
+    clearHistoryBtn.hidden = !(activeFeed === "home" && readHistory().length);
+    if (activeFeed === "home" && view.classList.contains("is-active") && (generation !== feeds.home.gen || feeds.home.page === 0)) {
+      // Load the first page explicitly; sentinel callbacks are not guaranteed after
+      // a reset, especially when Home is already visible.
+      loadMore(feeds.home);
+      kickFeed(feeds.home);
+    }
+  }
+
+  function updateLearningControls() {
+    const controls = feeds.home?.learningControls;
+    if (!controls) return;
+    const state = readRecommendations(), status = rec.localLearningStatus(state);
+    controls.progress.textContent = `Learning data: ${status.progress.qualifiedVideos}/100 qualified watches, ${status.progress.impressions}/500 visible impressions, ${status.progress.feedback}/20 feedback entries; ${status.samples}/100 distinct labeled videos (${status.positive}/10 positive, ${status.negative}/10 negative).`;
+    controls.note.textContent = !status.ready ? "Experimental learning stays off until there is enough useful data." :
+      status.active ? (state.models.neural && !status.neuralValidated ? "Bandit active; neural ranking awaits a successful validation check." : "Selected learning models are active locally.") :
+      state.models.neural ? "Neural ranking awaits a successful validation check; standard Complex ranking continues." : "Enough data to try local learning. Enable a model below if you want to experiment.";
+    for (const [key, checkbox] of Object.entries(controls.checkboxes)) {
+      checkbox.checked = state.models[key];
+      checkbox.disabled = !status.ready && !state.models[key];
+    }
+  }
+
+  function renderRecommendationControls(feed, state, settingsOpen) {
+    feed.learningControls = null;
+    const hint = el("p", "yt-hint", "Ranked locally from your watches, recent searches and feedback.");
+    const reset = el("button", "yt-action-btn", "Reset recommendation data");
+    reset.type = "button";
+    reset.addEventListener("click", () => {
+      watchSession = null;
+      store.set(REC_KEY, {});
+      rec.clearLearningCache();
+      refreshRecommendations(true);
+    });
+    const refresh = el("button", "yt-action-btn", "Refresh recommendations");
+    refresh.type = "button";
+    refresh.addEventListener("click", () => refreshRecommendations(true));
+    const details = el("details", "yt-recommendation-settings");
+    details.open = settingsOpen;
+    details.appendChild(el("summary", "", "Recommendation settings"));
+    const progress = el("p", "yt-hint"), note = el("p", "yt-hint");
+    const checkboxes = {};
+    details.append(progress, note);
+    for (const [key, title] of [["bandit", "Contextual bandit (experimental)"], ["neural", "Neural ranker (experimental)"]]) {
+      const label = el("label", "yt-learning-option"), checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.setAttribute("aria-label", title);
+      checkbox.addEventListener("change", () => {
+        const next = readRecommendations();
+        next.models[key] = checkbox.checked && rec.localLearningStatus(next).ready;
+        store.set(REC_KEY, next);
+        refreshRecommendations(true);
+      });
+      label.append(checkbox, document.createTextNode(title));
+      details.appendChild(label);
+      checkboxes[key] = checkbox;
+    }
+    const clearSearches = el("button", "yt-action-btn", "Clear search interests");
+    clearSearches.type = "button";
+    clearSearches.disabled = !state.searches.length;
+    clearSearches.addEventListener("click", () => {
+      const next = readRecommendations(); next.searches = [];
+      store.set(REC_KEY, next); refreshRecommendations(true);
+    });
+    details.appendChild(clearSearches);
+    for (const id of state.blockedChannels) {
+      const button = el("button", "yt-action-btn", `Unblock ${channelInfo(id)?.name || id}`);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        const next = readRecommendations(); next.blockedChannels = next.blockedChannels.filter(c => c !== id);
+        store.set(REC_KEY, next); refreshRecommendations(true);
+      });
+      details.appendChild(button);
+    }
+    const undo = el("button", "yt-action-btn", "Clear video feedback");
+    undo.type = "button";
+    undo.disabled = !Object.keys(state.feedback).length;
+    undo.addEventListener("click", () => {
+      const next = readRecommendations(); next.feedback = {};
+      store.set(REC_KEY, next); refreshRecommendations(true);
+    });
+    details.appendChild(undo);
+    feed.head.append(hint, reset, refresh, details);
+    feed.learningControls = { progress, note, checkboxes };
+    updateLearningControls();
+  }
+
+  // At most four Mixes, two subscribed channels, one discovered creator and one
+  // topic search per page. Existing API
   // caches/concurrency limits still apply. Each source stops when exhausted.
   function complexFetcher(seeds, subscriptions, query) {
+    const generation = feeds.home.gen + 1; // resetFeed installs this fetcher next.
     const sources = [];
     if (seeds.length) sources.push({ path: `/api/youtube/home?seeds=${seeds.join(",")}&group=1`, source: "related" });
     if (subscriptions.length) sources.push({ path: `/api/youtube/subscriptions?channels=${subscriptions.map(c => c.id).join(",")}`, source: "subscriptions" });
     if (query) sources.push({ path: `/api/youtube/search?q=${encodeURIComponent(query)}&limit=12`, source: "topic" });
+    let discoveryChecked = false;
     return async page => {
       const active = sources.filter(s => !s.done);
       const outcomes = await Promise.allSettled(active.map(s => api(`${s.path}&page=${page}`)));
+      if (generation !== feeds.home.gen) return { results: [], hasMore: false };
       if (outcomes.length && outcomes.every(o => o.status === "rejected")) throw outcomes[0].reason;
       const groups = [];
       outcomes.forEach((o, i) => {
@@ -406,6 +498,23 @@
         if (source.source === "related") groups.push(...(o.value.groups || []).map(g => ({ ...g, source: source.source })));
         else groups.push({ source: source.source, items: o.value.results || [] });
       });
+      if (!discoveryChecked) {
+        discoveryChecked = true;
+        const state = readRecommendations();
+        const known = new Set([...readHistory().map(h => h.channelId), ...readSubs().map(c => c.id)]);
+        const creator = rec.rankComplex(groups, { history: readHistory(), state, subscriptions: readSubs() })
+          .find(i => /^UC[A-Za-z0-9_-]{22}$/.test(i.channelId || "") && !known.has(i.channelId));
+        if (creator) {
+          const source = { path: `/api/youtube/channel/${creator.channelId}?limit=20`, source: "discovery" };
+          try {
+            const data = await api(`${source.path}&page=1`);
+            source.done = !data.hasMore;
+            sources.push(source);
+            groups.push({ source: source.source, items: data.results || [] });
+          } catch { /* Discovery is optional; keep the successful candidate pools. */ }
+        }
+      }
+      if (generation !== feeds.home.gen) return { results: [], hasMore: false };
       return { results: rec.rankComplex(groups, { history: readHistory(), state: readRecommendations(), subscriptions: readSubs(),
         saved: readSavedLists().flatMap(l => l.items), offset: feeds.home.items.length,
         previous: feeds.home.items.slice(-8) }, feeds.home.seen),
@@ -452,6 +561,7 @@
     homeAlgoSel.hidden = name !== "home";
     const feed = feeds[name];
     wantDates(feed.items); // cards loaded while this list was hidden
+    if (name === "home" && view.classList.contains("is-active") && feed.page === 0) loadMore(feed);
     kickFeed(feed);
   }
 
@@ -464,9 +574,9 @@
     watchSession = null;
     store.set(HISTORY_KEY, []);
     store.set(REC_KEY, {});
-    feeds.home.sig = null;
-    ensureHome();
-    clearHistoryBtn.hidden = true;
+    rec.clearLearningCache();
+    refreshRecommendations(true);
+    if (activeFeed === "history") ensureHistory();
   });
 
   // ---------- subscriptions (kept in this browser, like watch history) ----------
@@ -490,6 +600,7 @@
     store.set(SUBS_KEY, next);
     feeds.subs.sig = null;
     syncSubButtons();
+    refreshRecommendations();
     if (activeFeed === "subs") {
       ensureSubs();
       kickFeed(feeds.subs);
@@ -696,7 +807,7 @@
       try {
         const merged = window.YtPure.mergeHistory(readHistory(), JSON.parse(await f.text()), HISTORY_MAX);
         store.set(HISTORY_KEY, merged);
-        feeds.home.sig = null;
+        refreshRecommendations(true);
         ensureHistory();
       } catch {
         setStatus(feed, "That file isn't a valid watch-history export.", { error: true });
@@ -720,6 +831,7 @@
     store.set(SAVED_KEY, normalizeSavedLists(lists));
     if (!readSavedLists().some(list => list.id === selectedListId)) selectedListId = "watch-later";
     updateSaveVideoButton();
+    refreshRecommendations();
     if (activeFeed === "saved") ensureSaved();
   }
 
@@ -860,6 +972,10 @@
       emptyText: "No results.",
     });
     showFeed("results");
+    if (q.length <= 200) {
+      store.set(REC_KEY, rec.recordSearch(readRecommendations(), q));
+      refreshRecommendations();
+    }
   });
 
   // Called once a video has actually started loading: remember it, and point
@@ -867,7 +983,7 @@
   // watch page); from Results we stay put so you can keep browsing the list.
   function afterPlay(entry) {
     recordHistory(entry);
-    watchSession = { id: entry.id, pending: 0, pendingMedia: 0, sample: null };
+    watchSession = { id: entry.id, features: entry.recommendationFeatures, channelId: current.info?.channelId || entry.channelId, pending: 0, pendingMedia: 0, sample: null };
     const related = feeds.related;
     related.videoId = entry.id;
     related.stale = true;
@@ -876,6 +992,7 @@
     // lists we stay put so you can keep browsing them.
     if (activeFeed === "home" || activeFeed === "related") showFeed("related");
     else clearHistoryBtn.hidden = true;
+    refreshRecommendations();
   }
 
   // ---------- upload times for cards ----------
@@ -949,7 +1066,7 @@
     const body = el("span", "yt-card-body");
     body.appendChild(el("span", "yt-card-title", item.title));
     const chan = el("span", "yt-card-channel");
-    const iconUrl = knownIcon(item.channelId);
+    const iconUrl = channelImagePath(item.channelId, "avatar");
     if (iconUrl) {
       const av = el("img", "yt-avatar-sm");
       av.alt = "";
@@ -1012,9 +1129,11 @@
         store.set(HISTORY_KEY, readHistory().filter((h) => h.id !== item.id));
         const state = readRecommendations();
         delete state.stats[item.id]; delete state.feedback[item.id];
+        state.examples = state.examples.filter(e => e.id !== item.id);
+        rec.clearLearningCache();
         store.set(REC_KEY, state);
         if (watchSession?.id === item.id) watchSession = null;
-        feeds.home.sig = null; // Home must rebuild without this video's seed
+        refreshRecommendations(true); // Invalidate hidden Home and any old requests immediately.
         card.remove();
         if (!feed.grid.childElementCount) setStatus(feed, feed.emptyText);
       });
@@ -1030,13 +1149,12 @@
         button.setAttribute("aria-label", `${label}: ${value === "block" ? item.author || item.channelId : item.title}`);
         button.addEventListener("click", () => {
           store.set(REC_KEY, rec.setFeedback(readRecommendations(), item, value));
-          feed.sig = null;
-          ensureHome(); kickFeed(feed);
+          refreshRecommendations(true);
         });
         feedback.appendChild(button);
       }
       card.appendChild(feedback);
-      impressionCards.set(card, { id: item.id, feed, gen: feed.gen });
+      impressionCards.set(card, { id: item.id, features: item.recommendationFeatures, channelId: item.channelId, feed, gen: feed.gen });
       impressionObserver?.observe(card);
     }
     return card;
@@ -1059,13 +1177,15 @@
   function flushWatch() {
     if (!watchSession?.pending) return;
     const duration = current.info?.isLive ? 0 : Number.isFinite(video.duration) ? video.duration : current.info?.duration || 0;
-    store.set(REC_KEY, rec.recordWatch(readRecommendations(), watchSession.id, watchSession.pending, duration, Date.now(), watchSession.pendingMedia));
+    store.set(REC_KEY, rec.recordWatch(readRecommendations(), watchSession.id, watchSession.pending, duration, Date.now(), watchSession.pendingMedia, watchSession.features, watchSession.channelId));
+    updateLearningControls();
     watchSession.pending = 0;
     watchSession.pendingMedia = 0;
   }
   function stopWatchSample() {
     sampleWatch(); flushWatch();
     if (watchSession) { watchSession.sample = null; watchSession.playing = false; }
+    refreshRecommendations();
   }
   function finishWatch() { stopWatchSample(); watchSession = null; }
   video.addEventListener("playing", () => {
@@ -2214,6 +2334,32 @@
   for (const name of ["home", "results", "related", "subs", "channel", "playlist", "history", "saved"]) createFeed(name);
   syncSubButtons();
   showFeed("home");
+
+  window.addEventListener("storage", event => {
+    if (event.storageArea && event.storageArea !== localStorage) return;
+    if (event.key !== null && ![HISTORY_KEY, REC_KEY, SUBS_KEY, SAVED_KEY, HOME_ALGO_KEY].includes(event.key)) return;
+    const reset = event.key === null || (event.key === REC_KEY && (event.newValue === null || event.newValue === "{}"));
+    if (reset || (event.key === HISTORY_KEY && watchSession && !readHistory().some(h => h.id === watchSession.id))) watchSession = null;
+    if (reset || event.key === HISTORY_KEY) rec.clearLearningCache();
+    homeAlgoSel.value = homeAlgorithm();
+    feeds.subs.sig = null;
+    syncSubButtons();
+    // Impression-only writes from other tabs must not rebuild Home: rebuilding
+    // creates new impressions and would make the tabs endlessly refresh each other.
+    refreshRecommendations(reset || event.key !== REC_KEY);
+    updateLearningControls();
+    if (activeFeed === "history") ensureHistory();
+    if (activeFeed === "subs") { ensureSubs(); kickFeed(feeds.subs); }
+    if (activeFeed === "saved") ensureSaved();
+  });
+  if (typeof MutationObserver === "function") {
+    new MutationObserver(() => {
+      if (view.classList.contains("is-active")) {
+        refreshRecommendations();
+        kickFeed(feeds[activeFeed]);
+      }
+    }).observe(view, { attributes: true, attributeFilter: ["class"] });
+  }
 
   // Tell the user up front if yt-dlp is missing, instead of on their first search.
   (async () => {

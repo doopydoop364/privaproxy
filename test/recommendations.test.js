@@ -69,6 +69,27 @@ test("title profiles support Unicode and decay old interests without discarding 
   assert.equal(R.topicQuery([], {}, now), "");
 });
 
+test("search interests are bounded, deduplicated and decay back to watch topics", () => {
+  let state = {};
+  for (let i = 0; i < 25; i++) state = R.recordSearch(state, `Topic ${i}`, now);
+  state = R.recordSearch(state, "  TOPIC 24  ", now);
+  assert.equal(state.searches.length, 20);
+  assert.equal(state.searches[0].query, "TOPIC 24");
+  assert.equal(R.topicQuery([], state, now), "TOPIC 24");
+  assert.match(R.topicQuery([item(1)], state, now + 15 * 86400000), /space|science|planets/);
+  const recent = R.recordSearch({}, "astronomy telescopes", now);
+  assert.equal(R.rankComplex([{ items: [item(2, "Cooking pasta"), item(3, "Astronomy telescopes")] }], { state: recent, now })[0].id, item(3).id);
+});
+
+test("subscription source selection follows affinity and excludes blocked creators", () => {
+  const subs = [1, 2, 3].map(n => ({ id: ch(n) }));
+  const history = [item(1, "Space", 3)];
+  let state = R.recordWatch({}, item(1).id, 120, 120);
+  assert.equal(R.selectSubscriptions(subs, history, state)[0].id, ch(3));
+  state = R.setFeedback(state, history[0], "block");
+  assert.deepEqual(R.selectSubscriptions(subs, history, state).map(s => s.id), [ch(1), ch(2)]);
+});
+
 test("fusion rewards consensus, de-duplicates each source, and filters watched/disliked/blocked videos", () => {
   const a = item(1), b = item(2), watched = item(3), disliked = item(4), blocked = item(5);
   const groups = [{ items: [a, b, watched, disliked, blocked] }, { items: [b] }];

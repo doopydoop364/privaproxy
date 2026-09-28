@@ -86,6 +86,168 @@ const submit = async (env, text) => {
   await tick();
 };
 
+test("Complex shows the watch-first prompt after startup and after clearing an in-flight feed", async () => {
+  const empty = boot({ ytHomeAlgo: JSON.stringify("complex") });
+  await tick();
+  assert.match(feedSection(empty, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+  assert.equal(empty.requests.some(u => u.startsWith("/api/youtube/home")), false);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Space science")]) },
+    async url => url.startsWith("/api/youtube/home") ? (await gate, { status: 200, body: { groups: [{ items: [item("hhhhhhhhhh1", "Late result")] }], hasMore: false } }) : null);
+  await tick();
+  env.byId.get("ytClearHistory").click();
+  assert.match(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+  release();
+  await tick();
+  assert.equal(cards(env, "home").length, 0);
+  assert.deepEqual(JSON.parse(env.store.get("ytRecommendations")), {});
+  assert.equal(env.requests.some(u => u.startsWith("/api/youtube/channel/")), false, "abandoned results must not start discovery work after data is cleared");
+});
+
+test("removing the last history item immediately clears hidden Complex results and training records", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]),
+    ytRecommendations: JSON.stringify({ examples: [{ id: "aaaaaaaaaaa", features: Array(8).fill(0.5), watchReward: 1 }] }) });
+  await tick();
+  assert.ok(cards(env, "home").length > 0);
+  tabBtn(env, "history").click();
+  await tick();
+  cards(env, "history")[0].querySelector(".yt-card-remove").click();
+  assert.equal(cards(env, "home").length, 0);
+  assert.match(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).examples.some(e => e.id === "aaaaaaaaaaa"), false);
+  tabBtn(env, "home").click();
+  await tick();
+  assert.equal(cards(env, "home").length, 0);
+});
+
+test("normal searches refresh Complex interests without inventing watch history, and can be cleared", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex") }, async url => url.startsWith("/api/youtube/search") ?
+    { status: 200, body: { results: [item("ttttttttttt", "New search result")], hasMore: false } } : null);
+  await submit(env, "astronomy telescopes");
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).searches[0].query, "astronomy telescopes");
+  assert.equal(env.store.has("ytHistory"), false);
+  assert.equal(cards(env, "results")[0].querySelector(".yt-avatar-sm").src, AVATAR);
+  assert.equal(cards(env, "results")[0].querySelector(".yt-avatar-sm").loading, "lazy");
+  tabBtn(env, "home").click();
+  await tick();
+  assert.ok(env.requests.some(u => u.includes("q=astronomy%20telescopes&limit=12")));
+  assert.ok(cards(env, "home").length > 0);
+  feedSection(env, "home").querySelectorAll("button").find(b => b.textContent === "Clear search interests").click();
+  await tick();
+  assert.match(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+});
+
+test("cross-tab data clearing restores Complex's empty state", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]) });
+  await tick();
+  for (const key of ["ytHistory", "ytRecommendations", "ytSubs", "ytSavedLists"]) env.store.delete(key);
+  for (const handler of env.listeners.storage) handler({ key: null, storageArea: env.sandbox.localStorage });
+  await tick();
+  assert.equal(cards(env, "home").length, 0);
+  assert.match(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+});
+
+test("impression writes from another tab do not cause a recommendation refresh loop", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]) });
+  await tick();
+  const before = env.requests.filter(u => u.startsWith("/api/youtube/home")).length;
+  const state = require("../public/js/recommendations").recordImpression(JSON.parse(env.store.get("ytRecommendations")), "hhhhhhhhhh1");
+  env.store.set("ytRecommendations", JSON.stringify(state));
+  for (const handler of env.listeners.storage) handler({ key: "ytRecommendations", newValue: JSON.stringify(state), storageArea: env.sandbox.localStorage });
+  await tick();
+  assert.equal(env.requests.filter(u => u.startsWith("/api/youtube/home")).length, before);
+  assert.ok(cards(env, "home").length > 0);
+});
+
+test("Complex settings can undo blocked channels and feedback, while learning stays gated", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]) });
+  await tick();
+  const settings = feedSection(env, "home").querySelector(".yt-recommendation-settings");
+  assert.equal(settings.querySelectorAll("input").every(c => c.disabled && !c.checked), true);
+  cards(env, "home")[0].querySelector(".yt-card-feedback").querySelectorAll("button").find(b => b.textContent === "Block channel").click();
+  await tick();
+  feedSection(env, "home").querySelectorAll("button").find(b => b.textContent.startsWith("Unblock ")).click();
+  await tick();
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).blockedChannels.length, 0);
+  cards(env, "home")[0].querySelector(".yt-card-feedback").querySelectorAll("button").find(b => b.textContent === "Not interested").click();
+  await tick();
+  feedSection(env, "home").querySelectorAll("button").find(b => b.textContent === "Clear video feedback").click();
+  await tick();
+  assert.equal(Object.keys(JSON.parse(env.store.get("ytRecommendations")).feedback).length, 0);
+  assert.ok(cards(env, "home").length > 0);
+});
+
+test("creator discovery adds one unfamiliar channel's uploads and stops paging it when exhausted", async () => {
+  const other = "UC" + "b".repeat(22);
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]) }, async url => {
+    if (url.startsWith("/api/youtube/home")) return { status: 200, body: { groups: [{ items: [{ ...item("hhhhhhhhhh1", "Discovery"), channelId: other }] }], hasMore: false } };
+    if (url.startsWith(`/api/youtube/channel/${other}`)) return { status: 200, body: { results: [{ ...item("ddddddddddd", "Creator upload"), channelId: other }], hasMore: false } };
+  });
+  await tick();
+  assert.ok(cards(env, "home").some(c => c.textContent.includes("Creator upload")));
+  assert.equal(env.requests.filter(u => u.startsWith("/api/youtube/channel/")).length, 1);
+});
+
+test("history imports rebuild hidden Home and include imported seeds when shown", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex") });
+  await tick();
+  tabBtn(env, "history").click();
+  await tick();
+  const file = feedSection(env, "history").querySelector("input");
+  file.files = [{ size: 100, text: async () => JSON.stringify([item("aaaaaaaaaaa", "Imported astronomy")]) }];
+  file.dispatch("change");
+  await tick();
+  assert.doesNotMatch(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+  assert.equal(env.requests.some(u => u.startsWith("/api/youtube/home")), false, "hidden Home defers retrieval");
+  tabBtn(env, "home").click();
+  await tick();
+  assert.ok(env.requests.some(u => u.startsWith("/api/youtube/home?seeds=aaaaaaaaaaa")));
+  assert.ok(cards(env, "home").length > 0);
+});
+
+test("new watches and subscription changes invalidate hidden Home immediately", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex") });
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  assert.doesNotMatch(feedSection(env, "home").querySelector(".yt-feed-status").textContent, /once you've watched/);
+  assert.equal(env.requests.some(u => u.startsWith("/api/youtube/home")), false);
+  env.byId.get("ytSubBtn").click();
+  tabBtn(env, "home").click();
+  await tick();
+  assert.ok(env.requests.some(u => u.startsWith(`/api/youtube/subscriptions?channels=${CH}`)));
+  const count = env.requests.filter(u => u.startsWith("/api/youtube/home")).length;
+  env.byId.get("ytSubBtn").click();
+  await tick();
+  assert.ok(env.requests.filter(u => u.startsWith("/api/youtube/home")).length > count);
+});
+
+test("learning controls unlock at the data goal and enabling a model persists explicit consent", async () => {
+  const state = { stats: {}, feedback: {}, examples: [] };
+  for (let i = 0; i < 120; i++) {
+    const id = String(i).padStart(11, "0");
+    state.stats[id] = { seconds: 40, duration: 60, impressions: 5 };
+    if (i < 20) state.feedback[id] = { value: i % 2 ? "more" : "less" };
+    state.examples.push({ id, features: [0.5, i % 2, 0.2, 0, 0, 0.3, 0, 1], watchReward: i % 2 });
+  }
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytRecommendations: JSON.stringify(state) });
+  await tick();
+  let settings = feedSection(env, "home").querySelector(".yt-recommendation-settings");
+  settings.open = true;
+  const checkbox = settings.querySelectorAll("input")[0];
+  assert.equal(checkbox.disabled, false);
+  assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  checkbox.dispatch("change");
+  await tick();
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).models.bandit, true);
+  settings = feedSection(env, "home").querySelector(".yt-recommendation-settings");
+  assert.equal(settings.open, true);
+  assert.match(settings.textContent, /active locally/);
+  feedSection(env, "home").querySelectorAll("button").find(b => b.textContent === "Reset recommendation data").click();
+  await tick();
+  assert.equal(require("../public/js/recommendations").localLearningStatus(JSON.parse(env.store.get("ytRecommendations"))).active, false);
+});
+
 test("Complex combines grouped Mixes, bounded subscription uploads and topic searches locally", async () => {
   const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Space science planets")]),
     ytSubs: JSON.stringify([1, 2, 3].map(n => ({ id: "UC" + String(n).repeat(22), name: `Channel ${n}` }))) },
@@ -503,7 +665,7 @@ test("resume position, history page, loop, theater and speed memory", async () =
   assert.equal(JSON.parse(env.store.get("ytHistory")).length, 0);
 });
 
-test("cards show views and time since upload, plus an icon for channels we know", async () => {
+test("cards show views, upload time and avatars for both new and known channels", async () => {
   const env = boot({ ytChannelInfo: JSON.stringify({ [CH]: { name: "Someone", icon: AVATAR } }) });
   await submit(env, `https://www.youtube.com/playlist?list=${PL}`);
   const card = cards(env, "playlist")[0];
@@ -512,7 +674,7 @@ test("cards show views and time since upload, plus an icon for channels we know"
   // an unknown channel gets no icon (flat lists don't carry one)
   const env2 = boot();
   await submit(env2, `https://www.youtube.com/playlist?list=${PL}`);
-  assert.equal(cards(env2, "playlist")[0].querySelector(".yt-avatar-sm"), null);
+  assert.equal(cards(env2, "playlist")[0].querySelector(".yt-avatar-sm").src, AVATAR);
 });
 
 test("channel page shows banner, avatar, handle, subscribers and remembers the icon", async () => {

@@ -1,9 +1,9 @@
-// Local, deterministic recommendation stages. No network, DOM, or model dependency.
+// Local, deterministic recommendation stages. No network or DOM dependency.
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./ytlearning") : root.YtLearning);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.YtRecommendations = api;
-})(typeof self !== "undefined" ? self : this, function () {
+})(typeof self !== "undefined" ? self : this, function (learning) {
   "use strict";
   const VIDEO = /^[A-Za-z0-9_-]{11}$/;
   const CHANNEL = /^UC[A-Za-z0-9_-]{22}$/;
@@ -31,8 +31,42 @@
         title: String(v.title || "").slice(0, 200), author: String(v.author || "").slice(0, 100),
         channelId: CHANNEL.test(v.channelId || "") ? v.channelId : "" };
     }
-    return { version: 1, stats, feedback,
+    const searches = [];
+    for (const s of (Array.isArray(x.searches) ? x.searches : []).slice(0, 20)) {
+      if (!s || typeof s.query !== "string" || !s.query.trim()) continue;
+      const query = s.query.trim().slice(0, 200);
+      if (!searches.some(v => v.query.toLowerCase() === query.toLowerCase())) searches.push({ query, at: bounded(s.at, 1e13) });
+    }
+    const examples = [];
+    for (const e of (Array.isArray(x.examples) ? x.examples : []).slice(-600)) {
+      const features = learning.normalizeFeatures(e?.features);
+      if (!features || !VIDEO.test(e.id || "")) continue;
+      examples.push({ id: e.id, features, channelId: CHANNEL.test(e.channelId || "") ? e.channelId : "",
+        at: bounded(e.at, 1e13), watchReward: Number.isFinite(e.watchReward) ? bounded(e.watchReward, 1) : null });
+    }
+    return { version: 2, stats, feedback, searches, examples,
+      models: { bandit: x.models?.bandit === true, neural: x.models?.neural === true },
       blockedChannels: [...new Set((Array.isArray(x.blockedChannels) ? x.blockedChannels : []).filter(id => CHANNEL.test(id)))].slice(-100) };
+  }
+
+  function recordSearch(raw, query, now = Date.now()) {
+    const state = normalizeState(raw);
+    if (typeof query !== "string" || !query.trim()) return state;
+    query = query.trim().slice(0, 200);
+    state.searches = [{ query, at: now }, ...state.searches.filter(s => s.query.toLowerCase() !== query.toLowerCase())].slice(0, 20);
+    return state;
+  }
+
+  function addExample(state, id, features, channelId, now) {
+    const clean = learning.normalizeFeatures(features);
+    if (clean && VIDEO.test(id || "")) state.examples.push({ id, features: clean, channelId: CHANNEL.test(channelId || "") ? channelId : "", at: now, watchReward: null });
+    state.examples = state.examples.slice(-600);
+  }
+
+  function trainingExamples(raw) {
+    const state = normalizeState(raw);
+    return learning.cleanExamples(state.examples.map(e => ({ ...e, reward: state.blockedChannels.includes(e.channelId) ? 0 :
+      state.feedback[e.id]?.value === "more" ? 1 : state.feedback[e.id]?.value === "less" ? 0 : e.watchReward })));
   }
 
   function updateStats(raw, id, change) {
@@ -44,18 +78,28 @@
     return normalizeState(state);
   }
 
-  function recordWatch(raw, id, seconds, duration, now = Date.now(), mediaSeconds = seconds) {
+  function recordWatch(raw, id, seconds, duration, now = Date.now(), mediaSeconds = seconds, features, channelId) {
     if (!(seconds > 0) || !Number.isFinite(seconds)) return normalizeState(raw);
-    return updateStats(raw, id, prev => ({ seconds: (prev.seconds || 0) + seconds,
+    const state = updateStats(raw, id, prev => ({ seconds: (prev.seconds || 0) + seconds,
       mediaSeconds: (prev.mediaSeconds || 0) + bounded(mediaSeconds, 1e7),
       duration: bounded(duration, 86400), lastWatchedAt: now }));
+    let example = [...state.examples].reverse().find(e => e.id === id);
+    if (!example) { addExample(state, id, features, channelId, now); example = state.examples.at(-1); }
+    if (example?.id === id && state.stats[id]?.seconds >= 5) {
+      const s = state.stats[id];
+      example.watchReward = 0.6 * (s.duration > 0 ? Math.min(1, s.mediaSeconds / s.duration) : 0) + 0.4 * Math.min(1, s.seconds / 180);
+    }
+    return state;
   }
-  function recordImpression(raw, id, now = Date.now()) {
-    return updateStats(raw, id, prev => ({ impressions: (prev.impressions || 0) + 1, lastShownAt: now }));
+  function recordImpression(raw, id, now = Date.now(), features, channelId) {
+    const state = updateStats(raw, id, prev => ({ impressions: (prev.impressions || 0) + 1, lastShownAt: now }));
+    addExample(state, id, features, channelId, now);
+    return state;
   }
   function setFeedback(raw, item, value, now = Date.now()) {
     const state = normalizeState(raw);
     if (!VIDEO.test(item?.id || "")) return state;
+    if (!state.examples.some(e => e.id === item.id)) addExample(state, item.id, item.recommendationFeatures, item.channelId, now);
     if (value === "block" && CHANNEL.test(item.channelId || "")) {
       state.blockedChannels.push(item.channelId);
     } else if (["more", "less"].includes(value)) {
@@ -107,6 +151,7 @@
 
   function topicQuery(history, raw, now = Date.now()) {
     const state = normalizeState(raw), weights = new Map();
+    if (state.searches[0]?.at > now - 14 * DAY) return state.searches[0].query.slice(0, 100);
     profileItems(history, state).forEach((item, i) => {
       for (const t of tokens(item.title)) weights.set(t, (weights.get(t) || 0) + interest(item, state, now, i));
     });
@@ -119,7 +164,25 @@
     const progress = { qualifiedVideos: stats.filter(s => s.seconds >= Math.max(5, Math.min(30, (s.duration || 60) / 2))).length,
       impressions: stats.reduce((n, s) => n + s.impressions, 0), feedback: Object.keys(state.feedback).length };
     return { progress, goal: LEARNING_GOAL, ready: Object.keys(LEARNING_GOAL).every(k => progress[k] >= LEARNING_GOAL[k]),
-      active: false }; // No learned model is bundled or automatically enabled.
+      active: false }; // Data goal only; model readiness is checked separately.
+  }
+
+  function localLearningStatus(raw) {
+    const state = normalizeState(raw), base = learningStatus(state), examples = trainingExamples(state);
+    const positive = examples.filter(e => e.reward >= 0.6).length, negative = examples.filter(e => e.reward <= 0.25).length;
+    const ready = base.ready && examples.length >= learning.MIN_EXAMPLES && positive >= 10 && negative >= 10;
+    let model = null;
+    try { if (ready && (state.models.bandit || state.models.neural)) model = learning.train(examples); }
+    catch { /* Keep the heuristic pipeline if local training cannot finish. */ }
+    return { ...base, ready, samples: examples.length, positive, negative, minSamples: learning.MIN_EXAMPLES,
+      active: !!model && (state.models.bandit && !!model.bandit || state.models.neural && !!model.neural),
+      neuralValidated: !!model?.neural, model };
+  }
+
+  function selectSubscriptions(subscriptions, history, raw, max = 2) {
+    const state = normalizeState(raw), weights = new Map();
+    profileItems(history, state).forEach((h, i) => weights.set(h.channelId, (weights.get(h.channelId) || 0) + interest(h, state, Date.now(), i)));
+    return subscriptions.filter(s => !state.blockedChannels.includes(s.id)).sort((a, b) => (weights.get(b.id) || 0) - (weights.get(a.id) || 0)).slice(0, max);
   }
 
   // Compare media advance with monotonic wall time; seeks, buffering and long gaps
@@ -160,7 +223,7 @@
     if (!candidates.length) return [];
     // Small TF-IDF corpus from available titles; never requires a per-card lookup.
     const previous = (context.previous || []).slice(-8);
-    const docs = [...profile, ...candidates.map(c => c.item), ...previous].map(h => tokens(h.title));
+    const docs = [...profile, ...candidates.map(c => c.item), ...previous, ...state.searches.map(s => ({ title: s.query }))].map(h => tokens(h.title));
     const df = new Map();
     for (const doc of docs) for (const t of doc) df.set(t, (df.get(t) || 0) + 1);
     const vector = doc => new Map(doc.map(t => [t, Math.log((docs.length + 1) / ((df.get(t) || 0) + 1)) + 1]));
@@ -177,6 +240,10 @@
       const key = channelKey(item); affinity.set(key, (affinity.get(key) || 0) + w);
       for (const [t, v] of vector(docs[i])) topics.set(t, (topics.get(t) || 0) + w * v);
     });
+    state.searches.forEach((s, i) => {
+      const w = 0.65 * Math.pow(0.5, Math.max(0, now - s.at) / (7 * DAY)) / (1 + i * 0.5);
+      for (const [t, v] of vector(docs[profile.length + candidates.length + previous.length + i])) topics.set(t, (topics.get(t) || 0) + w * v);
+    });
     const maxFusion = Math.max(...candidates.map(c => c.fusion));
     candidates.forEach((c, i) => {
       c.vector = vector(docs[profile.length + i]);
@@ -190,8 +257,13 @@
         0.06 * Number(saved.has(c.item.id)) + 0.06 * fresh - penalty + (state.feedback[c.item.id]?.value === "more" ? 0.2 : 0);
       c.reason = subs.has(c.item.channelId) ? "From a subscription" : topic > 0.2 ? "Matches your interests" : c.sources.has("related") ? "Related to your watches" : "Discover something new";
       c.discovery = !affinity.has(channelKey(c.item)) && !subs.has(c.item.channelId);
+      c.features = [c.fusion / maxFusion, topic, channel, Number(subs.has(c.item.channelId)), Number(saved.has(c.item.id)), fresh,
+        Math.min(1, (exposure?.impressions || 0) / 8), Number(c.discovery)];
     });
-    // Future local bandit/neural adapter: same candidates, bounded score adjustment,
+    for (const c of candidates) c.baseScore = c.score;
+    const local = localLearningStatus(state);
+    if (local.active) for (const c of candidates) c.score += learning.score(local.model, c.features, state.models);
+    // Optional custom local adapter: same candidates, bounded score adjustment,
     // explicit enable flag, and useful-data gate. The deterministic pipeline remains.
     if (context.enableLearning === true && learningStatus(state).ready && typeof context.learnedRanker === "function") {
       try {
@@ -199,6 +271,7 @@
         for (const c of candidates) if (Number.isFinite(adjustments?.[c.item.id])) c.score += Math.max(-0.2, Math.min(0.2, adjustments[c.item.id]));
       } catch { /* A future model failure must not break Home. */ }
     }
+    for (const c of candidates) c.score = c.baseScore + Math.max(-0.2, Math.min(0.2, c.score - c.baseScore));
     const prior = previous.map((item, i) => ({ item, vector: vector(docs[profile.length + candidates.length + i]) }));
     const selected = [], remaining = [...candidates];
     // Maximal marginal relevance. About one slot in eight explores a new creator;
@@ -216,8 +289,8 @@
       selected.push(best);
       remaining.splice(remaining.indexOf(best), 1);
     }
-    return selected.map(c => ({ ...c.item, recommendationReason: c.reason }));
+    return selected.map(c => ({ ...c.item, recommendationReason: c.reason, recommendationFeatures: c.features }));
   }
-  return { LEARNING_GOAL, normalizeState, recordWatch, recordImpression, setFeedback, selectSeeds, topicQuery,
-    learningStatus, watchedDelta, rankComplex };
+  return { LEARNING_GOAL, normalizeState, recordSearch, recordWatch, recordImpression, setFeedback, selectSeeds, selectSubscriptions, topicQuery,
+    clearLearningCache: learning.clearCache, trainingExamples, learningStatus, localLearningStatus, watchedDelta, rankComplex };
 });

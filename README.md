@@ -347,10 +347,12 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
 
   **Complex** adds a local hybrid recommender (`public/js/recommendations.js`):
   up to four recent/satisfying watches and older favourites seed Mix candidates,
-  with at most two subscribed channels and one title-derived topic search per
-  page. These use the existing endpoints, yt-dlp caches and concurrency limits.
+  with at most two subscribed channels chosen by affinity, one unfamiliar
+  creator's uploads and one recent-search/title-derived topic search per page.
+  These use the existing endpoints, yt-dlp caches and concurrency limits.
   Sources that finish stop paging; a failed source does not discard successful
-  ones. New subscriptions without watch history can also supply a first feed.
+  ones. Subscriptions or recent searches without watch history can also supply
+  a first feed; an empty profile shows the watch-first prompt.
   Weighted reciprocal rank fusion combines the pools; TF-IDF/cosine title
   similarity, time-decayed channel/topic interests, real watch time and partial
   completion, saved videos, subscriptions, known upload dates and recent exposure
@@ -362,11 +364,18 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
   Complex cards explain their recommendation and offer **More like this**,
   **Not interested** and **Block channel** (when its ID is known). Feedback only
   filters/ranks Complex. **Reset recommendation data** clears watch statistics,
-  impressions and feedback, including blocked channels, while preserving the
-  history and saved lists. **Clear watch history** also clears recommendation data;
-  removing a history item removes its watch statistics and video feedback.
+  impressions, recent searches, training records and feedback, including blocked
+  channels and model preferences, while preserving history and saved lists. **Clear watch history** also clears recommendation data;
+  removing a history item removes its watch statistics, training records and video
+  feedback. Recommendations rebuild after feedback, searches, watches, history
+  imports/removals, subscription changes and saved-video changes. Hidden Home
+  feeds defer retrieval until shown; changes in another tab also invalidate them.
+  **Recommendation settings** lets you unblock creators, clear video feedback or
+  search interests separately, and inspect learning progress.
   `ytRecommendations` stores at most 400 video-stat entries, 200 video-feedback
-  entries and 100 blocked channels in this browser. Watch time compares media
+  entries, 100 blocked channels, 20 search interests and 600 feature records in
+  this browser. Search interests decay with a seven-day half-life; after two weeks
+  the retrieval query falls back to watch topics. Watch time compares media
   progress with elapsed real time, excluding seek jumps, buffering, pauses and
   long sample gaps; selecting or autoplaying a video alone supplies no watch-time
   reward. Content progress is stored separately for completion credit at different
@@ -376,17 +385,34 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
   Old watch-history exports still work; new exports preserve channel IDs and
   watch dates, but do not include the separate recommendation statistics.
 
-  Contextual bandit/neural models are **not bundled or enabled**. `rankComplex`
-  leaves a `learnedRanker(candidates, { history, state })` extension that returns
-  per-video score adjustments. It requires explicit `enableLearning: true` and
-  `learningStatus(state).ready`; adjustments are finite, capped at ±0.2, and
-  model failures fall back to deterministic ranking. The initial data goal is
-  100 distinct qualified videos, 500 visible impressions and 20 explicit video
-  feedback entries. A qualified video has at least half its duration watched,
-  capped at 30 seconds and floored at 5 seconds (30 seconds if duration is unknown).
-  Reaching this goal alone activates nothing: a future model still needs an
-  implementation, suitable training records, validation and explicit enablement.
-  Readiness is computed from bounded local records and can fall after a reset.
+  Experimental contextual bandit and neural models are bundled in
+  `public/js/ytlearning.js`, **off by default**. They run entirely in this browser
+  without dependencies, model downloads or telemetry. The bandit uses a shared
+  ridge-regression prediction plus an uncertainty bonus, inspired by
+  [LinUCB](https://arxiv.org/abs/1003.0146). The neural ranker is a small eight-input,
+  six-hidden-unit network. Both use retrieval consensus, topic/channel affinity,
+  subscriptions, saves, freshness, exposure and creator novelty. Training labels
+  come from actual watch progress or explicit feedback; an unwatched impression
+  alone is never treated as dislike. Repeated views of the same video cannot
+  inflate the distinct training-example count.
+
+  Controls unlock after 100 distinct qualified watches, 500 visible impressions,
+  20 explicit video-feedback entries and 100 distinct labeled feature records,
+  including at least ten positive and ten negative examples. A qualified watch
+  is half the video duration, capped at 30 seconds and floored at five seconds
+  (30 seconds for unknown durations). **Enablement still requires opting in** in
+  Recommendation settings. The neural model additionally must beat a constant
+  predictor on the newest 20% of labeled records, with both positive and negative
+  examples in that holdout. This prediction check does not prove better
+  recommendation quality; the models remain experimental. Falling below a data
+  goal suspends learning; resetting recommendation data disables it and clears
+  training records and the in-memory model cache. Learned score changes are
+  bounded to ±0.2 and always retain the heuristic candidate filters and MMR.
+
+  `rankComplex` also retains its optional `learnedRanker(candidates, { history,
+  state })` adapter, guarded by `enableLearning: true` and the original
+  `learningStatus(state).ready` usage gate. Combined built-in/custom adjustments
+  stay bounded; failures fall back to the heuristic pipeline.
 
 **Playback** builds one quality menu from everything YouTube offers: a
 *combined* audio+video file where one exists (usually 360p), and above that a
