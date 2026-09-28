@@ -36,7 +36,18 @@ The YouTube view offers local Watch Later and named lists, export/import,
 system media controls, and a live-HLS DVR/Go live control where the stream
 has a seekable window. The browser view saves each tab's last 50 history
 entries and can reopen recently closed tabs with Ctrl+Shift+T. The Status
-tab shows proxy and yt-dlp health plus recent playback issues in memory.
+tab updates server, proxy and yt-dlp health automatically while visible. It
+checks again five seconds after each completed refresh; choose 15 or 30 seconds,
+pause auto refresh, or use Refresh now. Polling stops while hidden or offline,
+cancels abandoned requests, and resumes when you return or reconnect. Checks
+never overlap. Failed requests retain clearly marked last-known results, with
+automatic recovery checks and a sign-in link when the session has expired.
+The dashboard shows overall health, API response times, backend probe ages and
+recent latency ranges (up to 20 distinct probes per backend). Service changes
+and playback messages stay in memory, capped at 20 entries each, with Clear
+controls. The YouTube check reports installed tools, not guaranteed playback
+availability. Polling reuses existing endpoints and their caching; it does not
+launch extra backend health probes or expose proxy credentials in the page.
 
 YouTube work is limited to three concurrent yt-dlp processes and 24 waiting
 jobs. Jobs waiting longer than 10 seconds return `503 busy`; disconnected

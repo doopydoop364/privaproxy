@@ -20,13 +20,15 @@ let adaptiveFixture = false;
 let proxyFailures = 0;
 let fixtureScramjet = false;
 let recommendationFixture = false;
+let statusChecks = 0, backendOnline = true, toolsUnavailable = false;
 const app = express();
 const server = http.createServer(app);
 app.get("/api/proxies", (_req, res) => {
   if (proxyFailures > 0) { proxyFailures--; return res.status(503).json({ error: "temporary" }); }
-  res.json([{ id: "bare-primary", name: "Primary", bareEndpoint: "/bare/", online: true }]);
+  res.json([{ id: "bare-primary", name: "Primary", bareEndpoint: "/bare/", online: backendOnline, latencyMs: backendOnline ? 15 : null, checkedAt: Date.now() }]);
 });
-app.get("/api/youtube/status", (_req, res) => res.json({ ok: true }));
+app.get("/api/auth/status", (_req, res) => { statusChecks++; res.json({ enabled: false }); });
+app.get("/api/youtube/status", (_req, res) => toolsUnavailable ? res.status(503).json({ error: "unavailable" }) : res.json({ ok: true }));
 app.get("/api/youtube/thumbnail/:id/:size.jpg", (_req, res) => res.type("png").send(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64")));
 app.get("/api/youtube/playlist/:id", (_req, res) => res.json({ playlist: { title: "Fixture" }, results: [item(A), item(B)], hasMore: false }));
 app.get("/api/youtube/video/:id", (req, res) => res.json({ ...item(req.params.id), streams: [{ formatId: "18", height: 360, label: "360p", ext: "mp4" }], captions: [], adaptive: adaptiveFixture ? {
@@ -156,9 +158,29 @@ async function main() {
     await wait("document.querySelector('.yt-feed[data-feed=\"subs\"] .yt-card') && document.querySelectorAll('.yt-chip').length === 1");
     console.log("PASS: unsubscribing reloads the visible subscription feed.");
     await evaluate("document.querySelector('.tab[data-view=\"status\"]').click(); return true;");
-    await wait("document.querySelector('#statusBackends').textContent.includes('Primary') && document.querySelector('#statusYoutube').textContent.includes('yt-dlp')");
-    console.log("PASS: status view displays live service checks.");
+    await wait("document.querySelector('#statusSummary').textContent === 'All checks passed.' && document.querySelector('#statusYoutube').textContent.includes('yt-dlp')");
+    backendOnline = false; toolsUnavailable = true;
+    await wait("document.querySelector('#statusBackends').textContent.includes('Primary: offline') && document.querySelector('#statusYoutube').textContent.includes('Showing last known results')");
+    assert.equal(await evaluate("return document.querySelector('#statusSummary').dataset.state;"), "error");
+    backendOnline = true; toolsUnavailable = false;
+    await wait("document.querySelector('#statusSummary').textContent === 'All checks passed.' && document.querySelector('#statusEvents').textContent.includes('recovered')");
+    console.log("PASS: status automatically detects outages, marks stale results and reports recovery.");
+    await evaluate("const auto=document.querySelector('#statusAuto'); auto.checked=false; auto.dispatchEvent(new Event('change')); return true;");
+    const pausedChecks = statusChecks;
+    await evaluate("await new Promise(resolve=>setTimeout(resolve,5500)); return true;");
+    assert.equal(statusChecks, pausedChecks, "paused status page kept polling");
+    await evaluate("document.querySelector('#statusRefresh').click(); return true;");
+    await wait("document.querySelector('#view-status').getAttribute('aria-busy') === 'false'");
+    assert.equal(statusChecks, pausedChecks + 1, "manual refresh didn't work while auto refresh was paused");
+    await evaluate("const interval=document.querySelector('#statusInterval'); interval.value='15000'; interval.dispatchEvent(new Event('change')); return true;");
+    assert.equal(await evaluate("return localStorage.getItem('statusInterval');"), "15000");
+    await evaluate("const interval=document.querySelector('#statusInterval'); interval.value='5000'; interval.dispatchEvent(new Event('change')); const auto=document.querySelector('#statusAuto'); auto.checked=true; auto.dispatchEvent(new Event('change')); return true;");
+    await wait("document.querySelector('#view-status').getAttribute('aria-busy') === 'false'");
     await evaluate("document.querySelector('.tab[data-view=\"youtube\"]').click(); return true;");
+    const hiddenChecks = statusChecks;
+    await evaluate("await new Promise(resolve=>setTimeout(resolve,5500)); return true;");
+    assert.equal(statusChecks, hiddenChecks, "hidden status page kept polling");
+    console.log("PASS: status pause, manual refresh, interval preference and hidden-page suspension work in Firefox.");
 
     recommendationFixture = true;
     await evaluate("localStorage.setItem('ytHistory',JSON.stringify([{id:'ccccccccccc',title:'Space science',channelId:'" + CH + "'}])); document.querySelector('[data-feed=\"home\"]').click(); const select=document.querySelector('#ytHomeAlgo'); select.value='complex'; select.dispatchEvent(new Event('change')); return true;");

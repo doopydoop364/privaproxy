@@ -116,6 +116,40 @@ button {
   display: flex;
 }
 
+/* ---------- Service status ---------- */
+.status-view { overflow-y: auto; gap: 14px; }
+.status-view h1, .status-view h2, .status-view p { margin: 0; }
+.status-view h1 { font-size: 24px; }
+.status-view h2 { font-size: 17px; }
+.status-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.status-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.status-toolbar label { display: flex; align-items: center; gap: 6px; }
+.status-view button, .status-view select, .status-view a {
+  color: var(--text); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 10px; font: inherit;
+}
+.status-view a { text-decoration: none; }
+.status-view button:hover { border-color: var(--accent); }
+.status-view button:disabled { opacity: 0.5; cursor: default; }
+.status-view :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.status-summary { border: 1px solid var(--border); border-left: 4px solid var(--text-dim); border-radius: 8px; padding: 14px; background: var(--panel); }
+.status-summary[data-state="ok"] { border-left-color: var(--accent); }
+.status-summary[data-state="error"] { border-left-color: #ffb4a9; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
+.status-card { border: 1px solid var(--border); border-radius: 8px; padding: 18px; background: var(--panel); min-width: 0; overflow-wrap: anywhere; }
+.status-card h2 { margin-bottom: 14px; }
+.status-card p + p { margin-top: 8px; }
+.status-muted { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.status-badge { font-weight: 600; }
+.status-badge.is-ok { color: var(--accent); }
+.status-badge.is-error { color: #ffb4a9; }
+.status-backend { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.status-backend-name { font-weight: 600; }
+.status-backend[data-state="error"] .status-backend-name { color: #ffb4a9; }
+.status-log { list-style: none; padding: 0; margin: 0; max-height: 280px; overflow-y: auto; }
+.status-log li { padding: 8px 0; font-size: 13px; line-height: 1.5; }
+.status-log li + li { border-top: 1px solid var(--border); }
+
 /* ---------- Browser tabs ---------- */
 
 .browser-toolbar {

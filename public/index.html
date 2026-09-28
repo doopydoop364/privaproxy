@@ -159,12 +159,27 @@
   </section>
 
   <section id="view-status" class="view status-view">
-    <h1>Service status</h1>
-    <button id="statusRefresh" type="button">Refresh</button>
-    <form method="post" action="/logout" id="statusLogout" hidden><button type="submit">Sign out</button></form>
-    <h2>Proxy backends</h2><div id="statusBackends" aria-live="polite">Checking…</div>
-    <h2>YouTube tools</h2><div id="statusYoutube" aria-live="polite">Checking…</div>
-    <h2>Recent playback issues</h2><ul id="statusIssues"></ul>
+    <div class="status-heading"><h1>Service status</h1>
+      <a id="statusLogin" href="/login" hidden>Sign in</a>
+      <form method="post" action="/logout" id="statusLogout" hidden><button type="submit">Sign out</button></form>
+    </div>
+    <p id="statusSummary" class="status-summary" role="status" data-state="checking">Waiting for checks.</p>
+    <div class="status-toolbar">
+      <label><input id="statusAuto" type="checkbox" checked> Auto refresh</label>
+      <label>Interval <select id="statusInterval"><option value="5000">5 seconds</option><option value="15000">15 seconds</option><option value="30000">30 seconds</option></select></label>
+      <button id="statusRefresh" type="button">Refresh now</button>
+      <span id="statusUpdateState" class="status-muted">Updates start when this page is open.</span>
+    </div>
+    <p id="statusUpdated" class="status-muted">No checks yet.</p>
+    <div class="status-grid">
+      <section class="status-card"><h2>This server</h2><div id="statusServer">Checking…</div></section>
+      <section class="status-card"><h2>Proxy backends</h2><div id="statusBackends">Checking…</div></section>
+      <section class="status-card"><h2>YouTube tools</h2><div id="statusYoutube">Checking…</div><p class="status-muted">Checks the installed tools; video availability can vary.</p></section>
+    </div>
+    <div class="status-grid">
+      <section class="status-card"><div class="status-heading"><h2>Service changes</h2><button id="statusClearEvents" type="button">Clear</button></div><ul id="statusEvents" class="status-log"></ul></section>
+      <section class="status-card"><div class="status-heading"><h2>Recent playback messages</h2><button id="statusClearIssues" type="button">Clear</button></div><ul id="statusIssues" class="status-log"></ul><p class="status-muted">Messages stay in memory for this session.</p></section>
+    </div>
   </section>
 
   <script src="/uv/uv.bundle.js"></script>
