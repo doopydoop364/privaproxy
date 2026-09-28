@@ -1,11 +1,11 @@
 {
   "name": "privaproxy",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "1.1.0",
+  "description": "Self-hosted privacy browser and YouTube client",
   "scripts": {
     "test": "node --test test/",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "build:portable": "node scripts/build-portable.js"
   },
   "keywords": [],
   "author": "",
@@ -22,5 +22,27 @@
   },
   "allowScripts": {
     "@mercuryworkshop/scramjet@1.1.0": true
+  },
+  "bin": {
+    "privaproxy": "bin/privaproxy.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin/*.js",
+    "server/*.js",
+    "server/proxies/*.js",
+    "server/youtube/*.js",
+    "server/config/proxies.json",
+    "public/index.html",
+    "public/css/*.css",
+    "public/js/*.js",
+    "public/uv/*.js",
+    "public/scramjet/*.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doopydoop364/privaproxy.git"
   }
 }

@@ -8,13 +8,10 @@ const { createBareServer } = require("@tomphttp/bare-server-node");
 // plus a "transport" module that implements the fetch/connect logic.
 // We use bare-as-module3, the legacy TompHTTP-compatible transport.
 //
-// Resolve by joining node_modules directly rather than require.resolve --
-// both packages restrict subpath access via "exports" in ways that make
-// require.resolve land in the wrong folder (e.g. bare-as-module3's "node"
-// condition points at ./lib, not the browser-facing ./dist we need to serve).
-const nodeModules = path.join(__dirname, "../../node_modules");
-const bareMuxDist = path.join(nodeModules, "@mercuryworkshop/bare-mux/dist");
-const bareModDist = path.join(nodeModules, "@mercuryworkshop/bare-as-module3/dist");
+// Use the packages' exported paths so nested, hoisted and global npm installs
+// all serve the same browser assets.
+const { baremuxPath: bareMuxDist } = require("@mercuryworkshop/bare-mux/node");
+const { bareModulePath: bareModDist } = require("@mercuryworkshop/bare-as-module3");
 
 const uvDistPath = path.dirname(
   require.resolve("@titaniumnetwork-dev/ultraviolet/package.json")

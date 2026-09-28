@@ -18,6 +18,87 @@ npm start
 
 Then open `http://localhost:3000`.
 
+### Run the `privaproxy` command
+
+Requires Node.js 22+ and npm. From a checkout:
+
+```bash
+npm install -g . --ignore-scripts
+privaproxy
+```
+
+The command works from any directory. It prints the URL to open; Ctrl+C stops
+it. `privaproxy --port 8080`, `--host ::1`, `--ytdlp /path/to/yt-dlp`,
+`--help` and `--version` are supported. Existing environment settings continue
+to work. `privaproxy --check` verifies installed frontend/proxy assets and runs
+`yt-dlp --version`; it exits nonzero when YouTube's dependency is unavailable,
+without starting a server. The proxy itself can run without yt-dlp. The CLI
+passes its own Node executable path to yt-dlp unless `YTDLP_JS_RUNTIMES` is
+explicitly set, so a globally installed or bundled runtime works without an
+additional `node` on PATH. Defaults remain local-only (`127.0.0.1:3000`).
+
+To inspect/build an installable npm release locally:
+
+```bash
+npm pack --dry-run
+npm pack
+npm install -g ./privaproxy-1.1.0.tgz --ignore-scripts
+```
+
+The dependencies ship their browser assets already built; installation scripts
+are unnecessary. These commands do not publish to any registry. Only selected runtime code,
+frontend assets and the default proxy configuration are packaged. Development
+files, dependency folders, `.env` files and portable builds are excluded. Review
+the package file list and configuration before publishing. The npm package does
+not include Node or yt-dlp; the portable distribution below does.
+
+### Portable download with bundled runtimes
+
+The builder creates a portable folder containing the app, locked production npm
+packages, an official Node.js runtime and the official standalone yt-dlp binary
+(which includes Python). Users unpack the folder and run `./privaproxy`; they
+do not need to install Node.js, npm, Python or yt-dlp separately. This is a
+folder/archive distribution, rather than a single executable that contains all
+assets. Keep the folder together; add that folder to PATH to use the plain
+`privaproxy` command elsewhere.
+
+Build on the target Linux/macOS system (x64 or arm64), with Node.js 22+, npm,
+`tar` and network access:
+
+```bash
+npm run build:portable
+./dist/privaproxy-linux-x64/privaproxy --check
+./dist/privaproxy-linux-x64/privaproxy
+```
+
+Use `--output /path/to/a/new/folder` to choose a destination. Existing folders
+are never overwritten. The default Node runtime is 24.21.0 LTS; use
+`--node-version 24.21.0` and `--ytdlp-version YYYY.MM.DD` to select releases.
+Without a yt-dlp version, the builder resolves the latest stable release and
+records its exact tag. Official Node/yt-dlp downloads are bounded, time-limited
+and verified against their release SHA-256 manifests before use. Dependency
+installation uses the lockfile with lifecycle scripts disabled. Each build
+records runtime checksums, versions and dependency identities in `manifest.json`,
+keeps runtime license notices, and runs the bundled command's dependency check
+before reporting success. No runtime files are downloaded at app startup.
+
+The builder supports Linux/macOS x64 and arm64; Linux x64 has been tested here.
+Windows portable builds are not implemented yet; the npm command is designed
+for npm's platform-specific executable links. Linux portable builds use the
+standard glibc Node distribution, rather than an Alpine/musl build. OS libraries
+still need to meet the bundled runtimes' requirements. ffmpeg is not bundled;
+this app streams existing formats and plays separate video/audio directly, rather
+than merging downloaded files.
+
+Build folders stay outside Git. The builder does not upload artifacts, create
+GitHub releases or publish npm packages. Node/yt-dlp and dependencies retain their
+own licenses; standalone yt-dlp includes GPLv3+ components. The manifest points
+to upstream sources, but redistribution must also satisfy the corresponding
+source and notice requirements. See [yt-dlp's distribution notes](https://github.com/yt-dlp/yt-dlp#licensing).
+Build a new folder to update the runtime; keep the same app origin to retain
+browser-local history and preferences.
+
+
 The server binds to `127.0.0.1` by default. Set `HOST` explicitly to change the
 bind address (for example, `HOST=::1` for IPv6 loopback). Binding to a LAN or
 wildcard address makes the unauthenticated proxy accessible to that network;

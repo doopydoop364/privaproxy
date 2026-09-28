@@ -1,0 +1,17 @@
+# Never ship local credentials or development artifacts.
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.log
+test/
+scripts/
+.github/
+.agents/
+.codex/
+dist/
+*.tgz
+AGENTS.md
+BUGFIX_REPORT.md

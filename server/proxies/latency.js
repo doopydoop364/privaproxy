@@ -1,4 +1,6 @@
 const path = require("path");
+const { pathToFileURL } = require("url");
+const { bareModulePath } = require("@mercuryworkshop/bare-as-module3");
 
 // Reuse the SAME client code the browser uses (bare-as-module3's transport
 // class), so a measurement here exercises the exact same request logic a
@@ -6,15 +8,12 @@ const path = require("path");
 // browser bundle file directly rather than the package specifier, because
 // the package's "node" export condition points at an unrelated path helper,
 // not the actual client class.
-const bareClientPath = path.resolve(
-  __dirname,
-  "../../node_modules/@mercuryworkshop/bare-as-module3/dist/index.mjs"
-);
+const bareClientPath = path.join(bareModulePath, "index.mjs");
 
 let clientV3Promise = null;
 function loadClientV3() {
   if (!clientV3Promise) {
-    clientV3Promise = import("file://" + bareClientPath).then((m) => m.default);
+    clientV3Promise = import(pathToFileURL(bareClientPath).href).then((m) => m.default);
   }
   return clientV3Promise;
 }

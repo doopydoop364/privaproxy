@@ -29,8 +29,8 @@ app.use("/api/youtube", youtubeRoutes);
 proxyRegistry.mountAll(app, server, auth);
 
 // --- hls.js (adaptive YouTube playback), served from node_modules ---
-// Joined path, not require.resolve: the package's "exports" map doesn't expose dist/.
-app.use("/vendor/hls/", express.static(path.join(__dirname, "../node_modules/hls.js/dist")));
+// Resolve the installed entry point; dependencies may be hoisted by npm.
+app.use("/vendor/hls/", express.static(path.dirname(require.resolve("hls.js"))));
 
 // --- Static frontend ---
 app.use(express.static(path.join(__dirname, "../public")));
@@ -47,3 +47,6 @@ server.listen(PORT, HOST, () => {
   const checkHost = address.address === "0.0.0.0" || address.address === "::" ? loopback : host;
   proxyRegistry.startLatencyChecks(`http://${checkHost}:${address.port}`, auth);
 });
+
+// The command-line launcher uses the server to report bind errors.
+module.exports = { app, server };

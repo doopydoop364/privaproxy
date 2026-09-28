@@ -7,10 +7,7 @@ const express = require("express");
 // server of its own: whichever backend the person has selected via
 // setTransport() (see public/js/app.js) is automatically what Scramjet
 // tabs use too. This module only has static files to serve.
-const scramjetDist = path.join(
-  __dirname,
-  "../../node_modules/@mercuryworkshop/scramjet/dist"
-);
+const { scramjetPath: scramjetDist } = require("@mercuryworkshop/scramjet/path");
 
 module.exports = {
   id: "scramjet",

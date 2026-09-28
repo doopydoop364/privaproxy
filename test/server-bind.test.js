@@ -20,9 +20,11 @@ function start(env = {}) {
     "./youtube/routes": {},
     "./auth": { createAuth: () => ({ enabled: false, mount() {}, setBareEndpoints() {} }) },
   };
+  const requireMock = name => modules[name];
+  requireMock.resolve = require.resolve;
   const file = path.resolve(__dirname, "../server/index.js");
   vm.runInNewContext(fs.readFileSync(file, "utf8"), {
-    require: name => modules[name], __dirname: path.dirname(file),
+    require: requireMock, module: { exports: {} }, __dirname: path.dirname(file),
     process: { env }, console: { log() {} },
   });
   return { binding, checkOrigin };
