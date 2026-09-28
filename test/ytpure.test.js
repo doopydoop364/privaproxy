@@ -289,5 +289,5 @@ test("applyHomeAlgorithm dispatches by name and falls back to balanced", () => {
 });
 
 test("HOME_ALGORITHMS lists exactly the supported names", () => {
-  assert.deepEqual(P.HOME_ALGORITHMS, ["balanced", "diverse"]);
+  assert.deepEqual(P.HOME_ALGORITHMS, ["balanced", "diverse", "complex"]);
 });

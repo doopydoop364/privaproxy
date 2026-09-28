@@ -334,6 +334,49 @@ reset, de-duplicates, and shows an inline error with Retry on failure. Without
   output through the same cache, so switching does no extra work server-side.
   The choice is remembered (`localStorage` key `ytHomeAlgo`).
 
+  **Complex** adds a local hybrid recommender (`public/js/recommendations.js`):
+  up to four recent/satisfying watches and older favourites seed Mix candidates,
+  with at most two subscribed channels and one title-derived topic search per
+  page. These use the existing endpoints, yt-dlp caches and concurrency limits.
+  Sources that finish stop paging; a failed source does not discard successful
+  ones. New subscriptions without watch history can also supply a first feed.
+  Weighted reciprocal rank fusion combines the pools; TF-IDF/cosine title
+  similarity, time-decayed channel/topic interests, real watch time and partial
+  completion, saved videos, subscriptions, known upload dates and recent exposure
+  rank them locally. MMR spreads similar titles and repeated creators across
+  page boundaries, with roughly one slot in eight exploring an unfamiliar creator
+  when available. These are tunable heuristics, not YouTube's proprietary model.
+  Already-watched videos are excluded, as in the other Home modes.
+
+  Complex cards explain their recommendation and offer **More like this**,
+  **Not interested** and **Block channel** (when its ID is known). Feedback only
+  filters/ranks Complex. **Reset recommendation data** clears watch statistics,
+  impressions and feedback, including blocked channels, while preserving the
+  history and saved lists. **Clear watch history** also clears recommendation data;
+  removing a history item removes its watch statistics and video feedback.
+  `ytRecommendations` stores at most 400 video-stat entries, 200 video-feedback
+  entries and 100 blocked channels in this browser. Watch time compares media
+  progress with elapsed real time, excluding seek jumps, buffering, pauses and
+  long sample gaps; selecting or autoplaying a video alone supplies no watch-time
+  reward. Content progress is stored separately for completion credit at different
+  playback speeds. Impressions are counted once per feed build when a card enters the
+  visible view. Only the selected IDs and topic query are sent for retrieval;
+  the full history, scores, watch-time statistics and feedback stay local.
+  Old watch-history exports still work; new exports preserve channel IDs and
+  watch dates, but do not include the separate recommendation statistics.
+
+  Contextual bandit/neural models are **not bundled or enabled**. `rankComplex`
+  leaves a `learnedRanker(candidates, { history, state })` extension that returns
+  per-video score adjustments. It requires explicit `enableLearning: true` and
+  `learningStatus(state).ready`; adjustments are finite, capped at ±0.2, and
+  model failures fall back to deterministic ranking. The initial data goal is
+  100 distinct qualified videos, 500 visible impressions and 20 explicit video
+  feedback entries. A qualified video has at least half its duration watched,
+  capped at 30 seconds and floored at 5 seconds (30 seconds if duration is unknown).
+  Reaching this goal alone activates nothing: a future model still needs an
+  implementation, suitable training records, validation and explicit enablement.
+  Readiness is computed from bounded local records and can fall after a reset.
+
 **Playback** builds one quality menu from everything YouTube offers: a
 *combined* audio+video file where one exists (usually 360p), and above that a
 *video-only* file paired with an *audio-only* file. The latter plays as a

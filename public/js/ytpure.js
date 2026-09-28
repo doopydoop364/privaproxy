@@ -269,6 +269,8 @@
         author: typeof x.author === "string" ? x.author.slice(0, 100) : "",
         thumbnail: safeImageUrl(x.thumbnail),
         duration: Number.isFinite(x.duration) ? x.duration : null,
+        ...(CHANNEL_ID_RE.test(x.channelId || "") ? { channelId: x.channelId } : {}),
+        ...(Number.isFinite(x.watchedAt) && x.watchedAt > 0 && x.watchedAt <= Date.now() ? { watchedAt: x.watchedAt } : {}),
       });
     }
     const seen = new Set();
@@ -294,7 +296,7 @@
 
   // ---------- Home feed ordering ----------
 
-  const HOME_ALGORITHMS = ["balanced", "diverse"];
+  const HOME_ALGORITHMS = ["balanced", "diverse", "complex"];
 
   // Plain round-robin across each seed's related list (one from seed 1, one from seed
   // 2, ...), deduplicated -- what the server's own /home endpoint already returns by

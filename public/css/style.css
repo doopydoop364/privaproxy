@@ -958,6 +958,9 @@ button {
 .yt-chip button:hover { color: var(--accent-yt); }
 .yt-chip-remove { color: var(--text-dim); padding-left: 2px; }
 .yt-card-remove { right: 40px; }
+.yt-card-reason { display: block; color: var(--accent-yt); font-size: 0.75rem; margin-top: 6px; }
+.yt-card-feedback { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+.yt-card-feedback .yt-link-btn { font-size: 0.75rem; }
 .yt-channel-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .yt-channel-row .yt-link-btn { font-size: 13px; }
 .yt-check { display: block; margin-top: 8px; font-size: 13px; color: var(--text-dim); }

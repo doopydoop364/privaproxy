@@ -66,6 +66,7 @@ function boot(seed, override, setup) {
     },
   });
   env.sandbox.YtPure = require("../public/js/ytpure.js");
+  env.sandbox.YtRecommendations = require("../public/js/recommendations.js");
   if (setup) setup(env);
   // record long timers (the audio-hold watchdog) so tests can fire them without waiting
   const realSetTimeout = env.sandbox.setTimeout;
@@ -84,6 +85,114 @@ const submit = async (env, text) => {
   env.byId.get("ytSearchForm").dispatch("submit");
   await tick();
 };
+
+test("Complex combines grouped Mixes, bounded subscription uploads and topic searches locally", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Space science planets")]),
+    ytSubs: JSON.stringify([1, 2, 3].map(n => ({ id: "UC" + String(n).repeat(22), name: `Channel ${n}` }))) },
+  async url => url.startsWith("/api/youtube/search") ? { status: 200, body: { results: [item("ttttttttttt", "Topic result")], hasMore: false } } : null);
+  await tick();
+  assert.ok(env.requests.some(u => u.startsWith("/api/youtube/home") && u.includes("group=1")));
+  const subscriptions = new URL(env.requests.find(u => u.startsWith("/api/youtube/subscriptions")), "http://localhost");
+  assert.equal(subscriptions.searchParams.get("channels").split(",").length, 2);
+  const search = new URL(env.requests.find(u => u.startsWith("/api/youtube/search")), "http://localhost");
+  assert.equal(search.searchParams.get("limit"), "12");
+  assert.match(search.searchParams.get("q"), /science|space|planets/);
+  assert.ok(cards(env, "home").some(c => c.textContent.includes("Topic result")));
+  assert.ok(cards(env, "home").every(c => c.querySelector(".yt-card-reason")));
+  assert.ok(Object.values(JSON.parse(env.store.get("ytRecommendations")).stats).some(s => s.impressions > 0));
+  assert.ok(!env.requests.some(u => /seconds|feedback|blockedChannels/.test(u)), "private profile isn't sent to the server");
+});
+
+test("Complex feedback survives reloads, hides unwanted videos and blocks channels", async () => {
+  const seed = { ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Video A")]) };
+  const env = boot(seed);
+  await tick();
+  const first = cards(env, "home")[0];
+  first.querySelector(".yt-card-feedback").querySelectorAll("button").find(b => b.textContent === "Not interested").click();
+  await tick();
+  const state = JSON.parse(env.store.get("ytRecommendations"));
+  const dismissed = Object.keys(state.feedback)[0];
+  assert.equal(state.feedback[dismissed].value, "less");
+  assert.ok(!cards(env, "home").some(c => c.querySelector(".yt-card-meta").dataset.id === dismissed));
+  const reload = boot(Object.fromEntries(env.store));
+  await tick();
+  assert.ok(!cards(reload, "home").some(c => c.querySelector(".yt-card-meta").dataset.id === dismissed));
+  cards(reload, "home")[0].querySelector(".yt-card-feedback").querySelectorAll("button").find(b => b.textContent === "Block channel").click();
+  await tick();
+  assert.deepEqual(JSON.parse(reload.store.get("ytRecommendations")).blockedChannels, [CH]);
+  assert.equal(cards(reload, "home").length, 0);
+  feedSection(reload, "home").querySelector(".yt-action-btn").click();
+  await tick();
+  assert.ok(cards(reload, "home").length > 0, "reset restores blocked creators");
+});
+
+test("More like this supplies an explicit seed without inventing a watch", async () => {
+  const env = boot({ ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "A")]) });
+  await tick();
+  const card = cards(env, "home")[0], id = card.querySelector(".yt-card-meta").dataset.id;
+  card.querySelector(".yt-card-feedback").querySelectorAll("button").find(b => b.textContent === "More like this").click();
+  await tick();
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).feedback[id].value, "more");
+  assert.ok(env.requests.some(u => u.startsWith("/api/youtube/home") && u.includes(id)));
+  assert.equal(JSON.parse(env.store.get("ytHistory")).length, 1);
+});
+
+test("Complex can start with subscriptions alone and tolerate failed candidate sources", async () => {
+  const seed = { ytHomeAlgo: JSON.stringify("complex"), ytSubs: JSON.stringify([{ id: CH, name: "Someone" }]) };
+  const emptyHistory = boot(seed);
+  await tick();
+  assert.equal(cards(emptyHistory, "home").length, 1);
+  assert.ok(!emptyHistory.requests.some(u => u.startsWith("/api/youtube/home") || u.startsWith("/api/youtube/search")));
+  const partial = boot({ ...seed, ytHistory: JSON.stringify([item("aaaaaaaaaaa", "A")]) }, async url =>
+    url.startsWith("/api/youtube/home") || url.startsWith("/api/youtube/search") ? { status: 503, body: { message: "Unavailable" } } : null);
+  await tick();
+  assert.equal(cards(partial, "home").length, 1);
+});
+
+test("Complex stops exhausted sources and offers Retry when all sources fail", async () => {
+  const seed = { ytHomeAlgo: JSON.stringify("complex"), ytHistory: JSON.stringify([item("aaaaaaaaaaa", "Space science")]) };
+  const env = boot(seed, async url => {
+    if (url.startsWith("/api/youtube/search")) return { status: 200, body: { results: [], hasMore: false } };
+    if (url.startsWith("/api/youtube/home")) {
+      const page = Number(new URL(url, "http://localhost").searchParams.get("page"));
+      return { status: 200, body: { groups: [{ seedId: "aaaaaaaaaaa", items: [item(`hhhhhhhhhh${page}`, "Home")], hasMore: page < 2 }], hasMore: page < 2 } };
+    }
+  });
+  await tick();
+  assert.equal(env.requests.filter(u => u.startsWith("/api/youtube/search")).length, 1);
+  assert.equal(env.requests.filter(u => u.startsWith("/api/youtube/home")).length, 2);
+  assert.equal(cards(env, "home").length, 2);
+  let fail = true;
+  const retry = boot(seed, async url => fail && (url.startsWith("/api/youtube/home") || url.startsWith("/api/youtube/search")) ?
+    { status: 503, body: { message: "Try again" } } : null);
+  await tick();
+  assert.match(feedSection(retry, "home").textContent, /Try again/);
+  fail = false;
+  feedSection(retry, "home").querySelector(".yt-feed-status").querySelector("button").click();
+  await tick();
+  assert.ok(cards(retry, "home").length > 0);
+});
+
+test("local watch accounting excludes starts, seek jumps, buffering and pauses, and clears with history", async () => {
+  let clock = 0;
+  const env = boot({}, null, ({ sandbox }) => { sandbox.performance = { now: () => clock }; });
+  await submit(env, "https://youtu.be/aaaaaaaaaaa");
+  assert.equal(env.store.has("ytRecommendations"), false, "starting a video isn't a satisfied watch");
+  const video = env.byId.get("ytVideo");
+  video.duration = 100;
+  video.dispatch("playing");
+  for (let i = 0; i < 6; i++) { clock += 1000; video.currentTime += 1; video.dispatch("timeupdate"); }
+  video.currentTime = 70; clock += 1000; video.dispatch("timeupdate");
+  video.dispatch("waiting");
+  clock += 1000; video.currentTime = 71; video.dispatch("timeupdate");
+  video.dispatch("pause");
+  assert.equal(JSON.parse(env.store.get("ytRecommendations")).stats.aaaaaaaaaaa.seconds, 6);
+  tabBtn(env, "home").click();
+  env.byId.get("ytClearHistory").click();
+  video.dispatch("playing"); clock += 1000; video.currentTime += 1; video.dispatch("timeupdate");
+  assert.deepEqual(JSON.parse(env.store.get("ytRecommendations")), {});
+  assert.deepEqual(JSON.parse(env.store.get("ytHistory")), []);
+});
 
 test("loads without errors and shows the home empty state", async () => {
   const env = boot();

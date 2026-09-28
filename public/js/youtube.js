@@ -132,10 +132,14 @@
   const HISTORY_MAX = 100;
   const HOME_SEEDS = 4; // how many recent videos the Home feed is built from
   const HOME_EMPTY_TEXT = "Recommendations appear here once you've watched a few videos. Search for something to get started.";
+  const REC_KEY = "ytRecommendations";
+  const rec = window.YtRecommendations;
+  const readRecommendations = () => rec.normalizeState(store.get(REC_KEY, {}));
+  let watchSession = null;
 
   function readHistory() {
     const h = store.get(HISTORY_KEY, []);
-    return Array.isArray(h) ? h.filter((x) => x && typeof x.id === "string" && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, HISTORY_MAX) : [];
+    return window.YtPure.mergeHistory([], h, HISTORY_MAX);
   }
   function recordHistory(entry) {
     const item = {
@@ -144,6 +148,8 @@
       author: entry.author || "",
       thumbnail: entry.thumbnail || "",
       duration: entry.duration == null ? null : entry.duration,
+      channelId: current.info?.channelId || entry.channelId || "",
+      watchedAt: Date.now(),
     };
     store.set(HISTORY_KEY, [item, ...readHistory().filter((h) => h.id !== item.id)].slice(0, HISTORY_MAX));
   }
@@ -184,6 +190,19 @@
   const feeds = {};
   const feedBySentinel = new Map();
   let activeFeed = "home";
+  const impressionCards = new WeakMap();
+  const impressionObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      const meta = impressionCards.get(entry.target);
+      if (!entry.isIntersecting || (entry.intersectionRatio !== undefined && entry.intersectionRatio < 0.5) ||
+          !meta || meta.gen !== meta.feed.gen || meta.feed.section.hidden ||
+          !view.classList.contains("is-active") || document.hidden) continue;
+      impressionObserver.unobserve(entry.target);
+      if (meta.feed.impressions.has(meta.id)) continue;
+      meta.feed.impressions.add(meta.id);
+      store.set(REC_KEY, rec.recordImpression(readRecommendations(), meta.id));
+    }
+  }, { root: view, threshold: 0.5 }) : null;
 
   const observer =
     typeof IntersectionObserver === "function"
@@ -215,6 +234,7 @@
       fetchPage: null, exclude: null, emptyText: "", items: [],
       page: 0, loading: false, done: true, seen: new Set(),
       gen: 0, stale: true, sig: null, videoId: null,
+      impressions: new Set(),
     };
     feedBySentinel.set(sentinel, feed);
     if (observer) observer.observe(sentinel);
@@ -246,6 +266,8 @@
     feed.done = !fetchPage;
     feed.stale = false;
     feed.seen.clear();
+    for (const card of feed.grid.children) impressionObserver?.unobserve(card);
+    feed.impressions.clear();
     feed.items = [];
     feed.grid.replaceChildren();
     setStatus(feed, "");
@@ -309,7 +331,8 @@
   // "Diverse": the *same* per-seed candidates (?group=1 asks the server not to
   // interleave them itself), reordered client-side to spread out repeated channels
   // instead of clustering them -- see diversify() in ytpure.js. Same yt-dlp work
-  // either way; only the ordering step differs.
+  // either way; only the ordering step differs. "Complex" adds local affinity,
+  // feedback, subscription/topic sources and MMR via recommendations.js.
   const HOME_ALGO_KEY = "ytHomeAlgo";
   const homeAlgorithm = () => (window.YtPure.HOME_ALGORITHMS.includes(store.get(HOME_ALGO_KEY, "balanced")) ? store.get(HOME_ALGO_KEY, "balanced") : "balanced");
   homeAlgoSel.value = homeAlgorithm();
@@ -322,12 +345,28 @@
 
   function ensureHome() {
     const feed = feeds.home;
-    const seeds = homeSeeds();
     const algo = homeAlgorithm();
-    const sig = `${seeds.join(",")}:${algo}`;
+    const history = readHistory(), state = readRecommendations();
+    const seeds = algo === "complex" ? rec.selectSeeds(history, state).map(h => h.id) : homeSeeds();
+    const subscriptions = readSubs().filter(c => !state.blockedChannels.includes(c.id)).slice(0, 2);
+    const sig = `${seeds.join(",")}:${algo}` + (algo === "complex" ? JSON.stringify([history, state.feedback, state.blockedChannels,
+      Object.entries(state.stats).filter(([, s]) => s.seconds > 0).map(([id, s]) => [id, s.seconds]), subscriptions, readSavedLists()]) : "");
     if (feed.sig === sig) return; // nothing watched, and no ordering change, since we last built it
     feed.sig = sig;
-    if (!seeds.length) {
+    feed.head.replaceChildren();
+    if (algo === "complex") {
+      const hint = el("p", "yt-hint", "Ranked in this browser from your watches, interests and feedback. Learning models are disabled.");
+      const reset = el("button", "yt-action-btn", "Reset recommendation data");
+      reset.type = "button";
+      reset.addEventListener("click", () => {
+        watchSession = null;
+        store.set(REC_KEY, {});
+        feed.sig = null;
+        ensureHome(); kickFeed(feed);
+      });
+      feed.head.append(hint, reset);
+    }
+    if (!seeds.length && !(algo === "complex" && subscriptions.length)) {
       resetFeed(feed, { fetchPage: null });
       setStatus(feed, HOME_EMPTY_TEXT);
       return;
@@ -336,7 +375,7 @@
     const seedParam = seeds.map(encodeURIComponent).join(",");
     resetFeed(feed, {
       fetchPage:
-        algo === "balanced"
+        algo === "complex" ? complexFetcher(seeds, subscriptions, rec.topicQuery(history, state)) : algo === "balanced"
           ? (page) => api(`/api/youtube/home?seeds=${seedParam}&page=${page}`)
           : async (page) => {
               const data = await api(`/api/youtube/home?seeds=${seedParam}&page=${page}&group=1`);
@@ -346,6 +385,32 @@
       emptyText: "Nothing to recommend right now.",
       autoload: false,
     });
+  }
+
+  // At most four Mixes, two channels and one topic search per page. Existing API
+  // caches/concurrency limits still apply. Each source stops when exhausted.
+  function complexFetcher(seeds, subscriptions, query) {
+    const sources = [];
+    if (seeds.length) sources.push({ path: `/api/youtube/home?seeds=${seeds.join(",")}&group=1`, source: "related" });
+    if (subscriptions.length) sources.push({ path: `/api/youtube/subscriptions?channels=${subscriptions.map(c => c.id).join(",")}`, source: "subscriptions" });
+    if (query) sources.push({ path: `/api/youtube/search?q=${encodeURIComponent(query)}&limit=12`, source: "topic" });
+    return async page => {
+      const active = sources.filter(s => !s.done);
+      const outcomes = await Promise.allSettled(active.map(s => api(`${s.path}&page=${page}`)));
+      if (outcomes.length && outcomes.every(o => o.status === "rejected")) throw outcomes[0].reason;
+      const groups = [];
+      outcomes.forEach((o, i) => {
+        const source = active[i];
+        if (o.status === "rejected") { source.done = true; return; }
+        source.done = !o.value.hasMore;
+        if (source.source === "related") groups.push(...(o.value.groups || []).map(g => ({ ...g, source: source.source })));
+        else groups.push({ source: source.source, items: o.value.results || [] });
+      });
+      return { results: rec.rankComplex(groups, { history: readHistory(), state: readRecommendations(), subscriptions: readSubs(),
+        saved: readSavedLists().flatMap(l => l.items), offset: feeds.home.items.length,
+        previous: feeds.home.items.slice(-8) }, feeds.home.seen),
+        hasMore: sources.some(s => !s.done) };
+    };
   }
 
   function startRelated() {
@@ -396,7 +461,9 @@
   });
 
   clearHistoryBtn.addEventListener("click", () => {
+    watchSession = null;
     store.set(HISTORY_KEY, []);
+    store.set(REC_KEY, {});
     feeds.home.sig = null;
     ensureHome();
     clearHistoryBtn.hidden = true;
@@ -800,6 +867,7 @@
   // watch page); from Results we stay put so you can keep browsing the list.
   function afterPlay(entry) {
     recordHistory(entry);
+    watchSession = { id: entry.id, pending: 0, pendingMedia: 0, sample: null };
     const related = feeds.related;
     related.videoId = entry.id;
     related.stale = true;
@@ -942,11 +1010,34 @@
       rm.setAttribute("aria-label", "Remove from watch history");
       rm.addEventListener("click", () => {
         store.set(HISTORY_KEY, readHistory().filter((h) => h.id !== item.id));
+        const state = readRecommendations();
+        delete state.stats[item.id]; delete state.feedback[item.id];
+        store.set(REC_KEY, state);
+        if (watchSession?.id === item.id) watchSession = null;
         feeds.home.sig = null; // Home must rebuild without this video's seed
         card.remove();
         if (!feed.grid.childElementCount) setStatus(feed, feed.emptyText);
       });
       card.appendChild(rm);
+    }
+    if (feed?.name === "home" && homeAlgorithm() === "complex") {
+      if (item.recommendationReason) body.appendChild(el("span", "yt-card-reason", item.recommendationReason));
+      const feedback = el("div", "yt-card-feedback");
+      for (const [value, label] of [["more", "More like this"], ["less", "Not interested"], ["block", "Block channel"]]) {
+        if (value === "block" && !/^UC[A-Za-z0-9_-]{22}$/.test(item.channelId || "")) continue;
+        const button = el("button", "yt-link-btn", label);
+        button.type = "button";
+        button.setAttribute("aria-label", `${label}: ${value === "block" ? item.author || item.channelId : item.title}`);
+        button.addEventListener("click", () => {
+          store.set(REC_KEY, rec.setFeedback(readRecommendations(), item, value));
+          feed.sig = null;
+          ensureHome(); kickFeed(feed);
+        });
+        feedback.appendChild(button);
+      }
+      card.appendChild(feedback);
+      impressionCards.set(card, { id: item.id, feed, gen: feed.gen });
+      impressionObserver?.observe(card);
     }
     return card;
   }
@@ -955,6 +1046,39 @@
 
   const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   const current = { entry: null, info: null, formatId: null, qlist: [], option: null, segments: [], skipped: new Set() };
+  function sampleWatch() {
+    if (!watchSession) return;
+    const next = { wall: typeof performance !== "undefined" ? performance.now() : Date.now(),
+      time: video.currentTime, rate: video.playbackRate, playing: !!watchSession.playing && !video.seeking };
+    const seconds = rec.watchedDelta(watchSession.sample, next);
+    watchSession.pending += seconds;
+    watchSession.pendingMedia += seconds * (next.rate || 1);
+    watchSession.sample = next;
+    if (watchSession.pending >= 5) flushWatch();
+  }
+  function flushWatch() {
+    if (!watchSession?.pending) return;
+    const duration = current.info?.isLive ? 0 : Number.isFinite(video.duration) ? video.duration : current.info?.duration || 0;
+    store.set(REC_KEY, rec.recordWatch(readRecommendations(), watchSession.id, watchSession.pending, duration, Date.now(), watchSession.pendingMedia));
+    watchSession.pending = 0;
+    watchSession.pendingMedia = 0;
+  }
+  function stopWatchSample() {
+    sampleWatch(); flushWatch();
+    if (watchSession) { watchSession.sample = null; watchSession.playing = false; }
+  }
+  function finishWatch() { stopWatchSample(); watchSession = null; }
+  video.addEventListener("playing", () => {
+    if (watchSession) { watchSession.playing = true; watchSession.sample = null; sampleWatch(); }
+  });
+  video.addEventListener("timeupdate", sampleWatch);
+  for (const event of ["waiting", "pause", "ended", "emptied", "error"]) video.addEventListener(event, stopWatchSample);
+  video.addEventListener("seeking", () => {
+    flushWatch();
+    if (watchSession) watchSession.sample = null;
+  });
+  video.addEventListener("ratechange", () => { if (watchSession) watchSession.sample = null; });
+  window.addEventListener("pagehide", stopWatchSample);
   // A video-only file plays in <video>; its matching audio-only file plays in this
   // element, kept in step with it (see the sync listeners below). Only used for the
   // "adaptive" qualities; combined files and HLS carry their own audio.
@@ -1025,6 +1149,7 @@
   }
 
   async function play(entry) {
+    finishWatch();
     saveResume(true); // remember where the previous video was before switching away from it
     const token = ++playToken;
     videoRequest?.abort();
@@ -1461,6 +1586,7 @@
   // ---------- close the player, back to Home ----------
 
   function closePlayer() {
+    finishWatch();
     saveResume(true);
     playToken++; // any lookup still in flight for the video is now stale
     videoRequest?.abort();

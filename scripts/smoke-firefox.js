@@ -19,6 +19,7 @@ let failScramjet = false;
 let adaptiveFixture = false;
 let proxyFailures = 0;
 let fixtureScramjet = false;
+let recommendationFixture = false;
 const app = express();
 const server = http.createServer(app);
 app.get("/api/proxies", (_req, res) => {
@@ -36,7 +37,11 @@ app.get("/api/youtube/stream/:id", (_req, res) => {
   if (process.argv[3]) res.sendFile(path.resolve(process.argv[3]));
   else res.status(404).end();
 });
-for (const route of ["/api/youtube/related/:id", "/api/youtube/home"]) app.get(route, (_req, res) => res.json({ results: [], hasMore: false }));
+app.get("/api/youtube/related/:id", (_req, res) => res.json({ results: [], hasMore: false }));
+app.get("/api/youtube/home", (_req, res) => res.json(recommendationFixture ? {
+  groups: [{ seedId: "ccccccccccc", items: [{ ...item("hhhhhhhhhh1"), channelId: CH }, { ...item("hhhhhhhhhh2"), channelId: OTHER }], hasMore: false }], hasMore: false,
+} : { results: [], hasMore: false }));
+app.get("/api/youtube/search", (_req, res) => res.json({ results: recommendationFixture ? [item("ttttttttttt")] : [], hasMore: false }));
 app.get("/api/youtube/subscriptions", (_req, res) => res.json({ results: [item(A)], hasMore: false }));
 app.get("/scramjet/sw.js", (req, res, next) => {
   if (failScramjet) res.status(404).end();
@@ -155,6 +160,23 @@ async function main() {
     console.log("PASS: status view displays live service checks.");
     await evaluate("document.querySelector('.tab[data-view=\"youtube\"]').click(); return true;");
 
+    recommendationFixture = true;
+    await evaluate("localStorage.setItem('ytHistory',JSON.stringify([{id:'ccccccccccc',title:'Space science',channelId:'" + CH + "'}])); document.querySelector('[data-feed=\"home\"]').click(); const select=document.querySelector('#ytHomeAlgo'); select.value='complex'; select.dispatchEvent(new Event('change')); return true;");
+    await wait("document.querySelectorAll('.yt-feed[data-feed=\"home\"] .yt-card-feedback').length >= 3");
+    assert.equal(await evaluate("return document.querySelector('#ytHomeAlgo option[value=\"complex\"]').textContent;"), "Complex");
+    await wait("Object.values(JSON.parse(localStorage.getItem('ytRecommendations')).stats).some(s=>s.impressions>0)");
+    const dismissed = await evaluate("const card=document.querySelector('.yt-feed[data-feed=\"home\"] .yt-card'); const id=card.querySelector('.yt-card-meta').dataset.id; [...card.querySelectorAll('.yt-card-feedback button')].find(b=>b.textContent==='Not interested').click(); return id;");
+    await wait(`!document.querySelector('.yt-feed[data-feed="home"] .yt-card-meta[data-id="${dismissed}"]') && document.querySelector('.yt-feed[data-feed="home"] .yt-card-feedback')`);
+    await navigate(origin + "/");
+    await evaluate("document.querySelector('.tab[data-view=\"youtube\"]').click(); return true;");
+    await wait("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-card-feedback')");
+    assert.equal(await evaluate(`return !!document.querySelector('.yt-feed[data-feed="home"] .yt-card-meta[data-id="${dismissed}"]');`), false);
+    await evaluate("document.querySelector('.yt-feed[data-feed=\"home\"] .yt-action-btn').click(); return true;");
+    await wait(`document.querySelector('.yt-feed[data-feed="home"] .yt-card-meta[data-id="${dismissed}"]')`);
+    console.log("PASS: Complex combines candidates, counts visible impressions, persists feedback and resets it in real Firefox.");
+    await evaluate("const select=document.querySelector('#ytHomeAlgo'); select.value='balanced'; select.dispatchEvent(new Event('change')); return true;");
+    recommendationFixture = false;
+
     if (process.argv[3]) {
       await evaluate("document.querySelector('#ytSearchInput').value='https://www.youtube.com/playlist?list=PLabcdefghij'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
       await wait("document.querySelectorAll('.yt-feed[data-feed=\"playlist\"] .yt-card').length === 2");
@@ -173,6 +195,14 @@ async function main() {
       await evaluate("const seek=document.querySelector('#ytSeek'); seek.dispatchEvent(new PointerEvent('pointerdown')); seek.dispatchEvent(new PointerEvent('pointerup')); const video=document.querySelector('#ytVideo'); video.currentTime=20; return true;");
       await wait("Number(document.querySelector('#ytSeek').value) >= 330 && Number(document.querySelector('#ytSeek').value) < 500");
       console.log("PASS: an unchanged seek gesture releases the progress slider.");
+
+      await evaluate("const video=document.querySelector('#ytVideo'); video.loop=false; video.currentTime=5; await video.play(); return true;");
+      await wait(`(JSON.parse(localStorage.getItem('ytRecommendations'))?.stats['${B}']?.seconds || 0) >= 5`);
+      const beforeSeek = await evaluate(`return JSON.parse(localStorage.getItem('ytRecommendations')).stats['${B}'].seconds;`);
+      await evaluate("const video=document.querySelector('#ytVideo'); video.currentTime=50; video.pause(); return true;");
+      const afterSeek = await evaluate(`return JSON.parse(localStorage.getItem('ytRecommendations')).stats['${B}'].seconds;`);
+      assert.ok(afterSeek - beforeSeek < 2, "seek counted as watch time");
+      console.log("PASS: real playback records elapsed viewing without counting a seek jump.");
 
       adaptiveFixture = true;
       await evaluate("document.querySelector('#ytClose').click(); document.querySelector('#ytSearchInput').value='https://youtu.be/aaaaaaaaaaa'; document.querySelector('#ytSearchForm').dispatchEvent(new Event('submit',{cancelable:true})); return true;");
