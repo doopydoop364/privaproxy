@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "description": "Self-hosted privacy browser and YouTube client",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/*.test.js\"",
     "start": "node server/index.js",
     "build:portable": "node scripts/build-portable.js"
   },

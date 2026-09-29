@@ -17,7 +17,7 @@ async function fetchThumbnail(id, size, signal) {
       signal, lookup, agent: false, headers: { "accept-encoding": "identity" },
     }, res => {
       clearTimeout(deadline);
-      resolve({ status: res.statusCode, headers: new Headers(res.headers), body: Readable.toWeb(res) });
+      resolve({ status: res.statusCode, headers: new Headers(res.headers), body: Readable.toWeb(res, { strategy: { highWaterMark: 0 } }) });
     });
     req.on("error", err => { clearTimeout(deadline); reject(err); });
     deadline = setTimeout(() => req.destroy(new Error("Thumbnail request timed out.")), 10000);

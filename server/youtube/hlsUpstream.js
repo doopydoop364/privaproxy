@@ -60,7 +60,9 @@ function request(url, { headers, signal }) {
         if (value !== undefined) responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
       }
       resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300,
-        headers: responseHeaders, body: Readable.toWeb(res), url: url.href });
+        // Read on demand: Node 24 can otherwise enqueue buffered data after
+        // an immediately cancelled redirect/body has closed its controller.
+        headers: responseHeaders, body: Readable.toWeb(res, { strategy: { highWaterMark: 0 } }), url: url.href });
     });
     req.on("error", err => { clearTimeout(deadline); reject(err); });
     // Socket idle timeouts start after connection; also bound DNS, TLS and
