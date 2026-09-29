@@ -132,7 +132,8 @@ async function build(argv = process.argv.slice(2)) {
     if (!pkg || path.basename(pkg.filename) !== pkg.filename) throw new Error("Unexpected npm package filename.");
     await extract(path.join(temporary, pkg.filename), temporary, "package");
     const app = path.join(output, "app");
-    await fs.rename(path.join(temporary, "package"), app);
+    // The temp directory and output may be on different drives/mounts.
+    await fs.cp(path.join(temporary, "package"), app, { recursive: true, force: false, errorOnExist: true });
     await fs.copyFile(path.join(ROOT, "package-lock.json"), path.join(app, "package-lock.json"));
     console.log("Installing locked production dependencies (installation scripts disabled)…");
     await exec(nodeBinary, [npmCli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", cache],
