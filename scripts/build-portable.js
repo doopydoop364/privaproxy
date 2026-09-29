@@ -15,10 +15,19 @@ const NODE_VERSION = "24.21.0";
 const MAX_DOWNLOAD = 180 * 1024 * 1024;
 
 function target(platform = process.platform, arch = process.arch) {
-  if (!["linux", "darwin"].includes(platform) || !["x64", "arm64"].includes(arch)) {
-    throw new Error("Portable builds currently support Linux/macOS x64 and arm64. Build on the target OS and architecture.");
+  if (!["linux", "darwin", "win32"].includes(platform) || !["x64", "arm64"].includes(arch)) {
+    throw new Error("Portable builds currently support Linux/macOS/Windows x64 and arm64. Build on the target OS and architecture.");
   }
-  return { platform, arch, ytAsset: platform === "darwin" ? "yt-dlp_macos" : arch === "arm64" ? "yt-dlp_linux_aarch64" : "yt-dlp_linux" };
+  const windows = platform === "win32";
+  return { platform, arch, ytAsset: windows ? (arch === "arm64" ? "yt-dlp_arm64.exe" : "yt-dlp.exe") : platform === "darwin" ? "yt-dlp_macos" : arch === "arm64" ? "yt-dlp_linux_aarch64" : "yt-dlp_linux",
+    nodePlatform: windows ? "win" : platform, archiveExtension: windows ? "zip" : "tar.gz",
+    nodeBinary: windows ? "node.exe" : "node", ytBinary: windows ? "yt-dlp.exe" : "yt-dlp", launcher: windows ? "privaproxy.cmd" : "privaproxy",
+    nodeRelative: windows ? "node.exe" : "bin/node", npmRelative: windows ? "node_modules/npm/bin/npm-cli.js" : "lib/node_modules/npm/bin/npm-cli.js" };
+}
+
+function launcherScript(platform = process.platform) {
+  if (platform === "win32") return '@echo off\r\nsetlocal DisableDelayedExpansion\r\nif not defined YTDLP_PATH set "YTDLP_PATH=%~dp0runtime\\yt-dlp.exe"\r\n"%~dp0runtime\\node.exe" "%~dp0app\\bin\\privaproxy.js" %*\r\nexit /b %errorlevel%\r\n';
+  return `#!/bin/sh\nset -eu\nPRIVAPROXY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport YTDLP_PATH="\${YTDLP_PATH:-$PRIVAPROXY_DIR/runtime/yt-dlp}"\nexec "$PRIVAPROXY_DIR/runtime/node" "$PRIVAPROXY_DIR/app/bin/privaproxy.js" "$@"\n`;
 }
 
 function checksum(text, filename) {
@@ -48,12 +57,19 @@ async function textDownload(url, folder, name) {
   return fs.readFile(file, "utf8");
 }
 
-async function extract(archive, folder, prefix) {
-  const { stdout } = await exec("tar", ["-tzf", archive], { maxBuffer: 8 * 1024 * 1024 });
-  for (const name of stdout.trim().split("\n")) {
+function validateArchivePaths(listing, prefix) {
+  const names = listing.trim().split(/\r?\n/);
+  if (!listing.trim()) throw new Error("Empty runtime archive.");
+  for (const name of names) {
     if (!name.startsWith(`${prefix}/`) || name.includes("\\") || name.split("/").includes("..")) throw new Error("Unsafe runtime archive path.");
   }
-  await exec("tar", ["-xzf", archive, "-C", folder], { maxBuffer: 8 * 1024 * 1024 });
+}
+
+async function extract(archive, folder, prefix) {
+  // Windows' built-in bsdtar handles both ZIP and gzip archives.
+  const { stdout } = await exec("tar", ["-tf", archive], { maxBuffer: 8 * 1024 * 1024 });
+  validateArchivePaths(stdout, prefix);
+  await exec("tar", ["-xf", archive, "-C", folder], { maxBuffer: 8 * 1024 * 1024 });
 }
 
 async function build(argv = process.argv.slice(2)) {
@@ -62,7 +78,7 @@ async function build(argv = process.argv.slice(2)) {
     "ytdlp-version": { type: "string" }, help: { type: "boolean", short: "h" },
   } });
   if (values.help) {
-    console.log("Usage: npm run build:portable -- [--output <new-folder>] [--node-version <version>] [--ytdlp-version <release-tag>]\nDownloads official runtimes, verifies SHA-256 checksums, and installs locked production dependencies.\nRequires Node.js 22+, npm, tar and network access on the target Linux/macOS system.");
+    console.log("Usage: npm run build:portable -- [--output <new-folder>] [--node-version <version>] [--ytdlp-version <release-tag>]\nDownloads official runtimes, verifies SHA-256 checksums, and installs locked production dependencies.\nRequires Node.js 22+, tar and network access on the target Linux/macOS/Windows system.");
     return;
   }
   const t = target();
@@ -76,8 +92,8 @@ async function build(argv = process.argv.slice(2)) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "privaproxy-build-"));
   try {
     console.log(`Building ${t.platform}-${t.arch} in ${output}`);
-    const nodeName = `node-v${nodeVersion}-${t.platform}-${t.arch}`;
-    const nodeArchive = `${nodeName}.tar.gz`;
+    const nodeName = `node-v${nodeVersion}-${t.nodePlatform}-${t.arch}`;
+    const nodeArchive = `${nodeName}.${t.archiveExtension}`;
     const nodeBase = `https://nodejs.org/dist/v${nodeVersion}`;
     const sums = await textDownload(`${nodeBase}/SHASUMS256.txt`, temporary, "node-checksums.txt");
     const nodeHash = checksum(sums, nodeArchive);
@@ -96,15 +112,21 @@ async function build(argv = process.argv.slice(2)) {
     const ytHash = checksum(ytSums, t.ytAsset);
     const runtime = path.join(output, "runtime");
     await fs.mkdir(runtime);
-    await fs.copyFile(path.join(temporary, nodeName, "bin/node"), path.join(runtime, "node"));
+    const nodeBinary = path.join(runtime, t.nodeBinary);
+    const ytBinary = path.join(runtime, t.ytBinary);
+    await fs.copyFile(path.join(temporary, nodeName, t.nodeRelative), nodeBinary);
     console.log(`Downloading and verifying standalone yt-dlp ${ytVersion}…`);
-    await download(`${ytBase}/${t.ytAsset}`, path.join(runtime, "yt-dlp"), ytHash);
-    await fs.chmod(path.join(runtime, "node"), 0o755);
-    await fs.chmod(path.join(runtime, "yt-dlp"), 0o755);
+    await download(`${ytBase}/${t.ytAsset}`, ytBinary, ytHash);
+    if (t.platform !== "win32") {
+      await fs.chmod(nodeBinary, 0o755);
+      await fs.chmod(ytBinary, 0o755);
+    }
 
     const cache = path.join(temporary, "npm-cache");
     const npmArgs = ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary, "--cache", cache];
-    const packed = process.env.npm_execpath ? await exec(process.execPath, [process.env.npm_execpath, ...npmArgs], { cwd: ROOT }) : await exec("npm", npmArgs, { cwd: ROOT });
+    // Invoke npm's JavaScript entry directly, avoiding npm.cmd/shell quoting.
+    const npmCli = path.join(temporary, nodeName, t.npmRelative);
+    const packed = await exec(nodeBinary, [npmCli, ...npmArgs], { cwd: ROOT });
     const metadata = JSON.parse(packed.stdout);
     const pkg = Array.isArray(metadata) ? metadata[0] : Object.values(metadata)[0];
     if (!pkg || path.basename(pkg.filename) !== pkg.filename) throw new Error("Unexpected npm package filename.");
@@ -113,7 +135,7 @@ async function build(argv = process.argv.slice(2)) {
     await fs.rename(path.join(temporary, "package"), app);
     await fs.copyFile(path.join(ROOT, "package-lock.json"), path.join(app, "package-lock.json"));
     console.log("Installing locked production dependencies (installation scripts disabled)…");
-    await exec(path.join(runtime, "node"), [path.join(temporary, nodeName, "lib/node_modules/npm/bin/npm-cli.js"), "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", cache],
+    await exec(nodeBinary, [npmCli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", cache],
       { cwd: app, timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
 
     const notices = path.join(output, "licenses");
@@ -127,11 +149,12 @@ async function build(argv = process.argv.slice(2)) {
     await fs.writeFile(path.join(output, "manifest.json"), JSON.stringify({ version: require("../package.json").version, ...t,
       node: { version: nodeVersion, archive: nodeArchive, sha256: nodeHash, source: `${nodeBase}/node-v${nodeVersion}.tar.gz` },
       ytdlp: { version: ytVersion, asset: t.ytAsset, sha256: ytHash, source: `${ytBase}/yt-dlp.tar.gz` }, packages }, null, 2) + "\n");
-    await fs.writeFile(path.join(output, "privaproxy"), `#!/bin/sh\nset -eu\nPRIVAPROXY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport YTDLP_PATH="\${YTDLP_PATH:-$PRIVAPROXY_DIR/runtime/yt-dlp}"\nexec "$PRIVAPROXY_DIR/runtime/node" "$PRIVAPROXY_DIR/app/bin/privaproxy.js" "$@"\n`, { mode: 0o755 });
-    await fs.writeFile(path.join(output, "README.txt"), "Run ./privaproxy, then open the printed local URL. No Node.js, npm, Python or yt-dlp installation is needed.\nUse ./privaproxy --check to verify the bundled runtime. This build is for the OS/architecture in manifest.json.\nKeep the complete folder together. To use the plain command, add this folder to PATH.\nRuntime/dependency notices are in licenses/ and app/node_modules/. yt-dlp standalone components include GPLv3+ code; consult the upstream distribution terms and provide corresponding sources when redistributing.\nNo auto-update or external publication occurs. Build a new folder to update; browser-local data is unaffected at the same origin.\n");
-    const verified = await exec(path.join(output, "privaproxy"), ["--check"], { cwd: temporary, timeout: 30000 });
+    await fs.writeFile(path.join(output, t.launcher), launcherScript(t.platform), { mode: 0o755 });
+    const command = t.platform === "win32" ? ".\\privaproxy.cmd" : "./privaproxy";
+    await fs.writeFile(path.join(output, "README.txt"), `Run ${command}, then open the printed local URL. No Node.js, npm, Python or yt-dlp installation is needed.\nUse ${command} --check to verify the bundled runtime. This build is for the OS/architecture in manifest.json.\nKeep the complete folder together. To use the plain command, add this folder to PATH.\nRuntime/dependency notices are in licenses/ and app/node_modules/. yt-dlp standalone components include GPLv3+ code; consult the upstream distribution terms and provide corresponding sources when redistributing.\nNo auto-update or external publication occurs. Build a new folder to update; browser-local data is unaffected at the same origin.\n`);
+    const verified = await exec(nodeBinary, [path.join(app, "bin/privaproxy.js"), "--check"], { cwd: temporary, timeout: 30000, env: { ...process.env, YTDLP_PATH: ytBinary } });
     console.log(verified.stdout.trim());
-    console.log(`Portable build ready: ${output}\nLaunch: ${path.join(output, "privaproxy")}`);
+    console.log(`Portable build ready: ${output}\nLaunch: ${path.join(output, t.launcher)}`);
   } catch (error) {
     throw new Error(`${error.message}\nThe incomplete folder remains at ${output}; choose a new output folder when retrying.`);
   } finally {
@@ -140,4 +163,4 @@ async function build(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) build().catch(error => { console.error(`Portable build failed: ${error.message}`); process.exitCode = 1; });
-module.exports = { target, checksum, download, build };
+module.exports = { target, launcherScript, validateArchivePaths, checksum, download, build };

@@ -144,7 +144,7 @@ function runOnce(c, args, timeoutMs, tolerant = false, signal = scope.getStore()
     if (signal?.aborted) return reject(signal.reason);
     let child;
     try {
-      child = spawn(c.bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(c.bin, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     } catch (e) {
       return reject(spawnError(e));
     }

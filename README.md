@@ -56,13 +56,14 @@ not include Node or yt-dlp; the portable distribution below does.
 
 The builder creates a portable folder containing the app, locked production npm
 packages, an official Node.js runtime and the official standalone yt-dlp binary
-(which includes Python). Users unpack the folder and run `./privaproxy`; they
+(which includes Python). Users unpack the folder and run `./privaproxy` on
+Linux/macOS or `.\privaproxy.cmd` on Windows; they
 do not need to install Node.js, npm, Python or yt-dlp separately. This is a
 folder/archive distribution, rather than a single executable that contains all
 assets. Keep the folder together; add that folder to PATH to use the plain
 `privaproxy` command elsewhere.
 
-Build on the target Linux/macOS system (x64 or arm64), with Node.js 22+, npm,
+Build on the target Linux/macOS/Windows system (x64 or arm64), with Node.js 22+, npm,
 `tar` and network access:
 
 ```bash
@@ -70,6 +71,22 @@ npm run build:portable
 ./dist/privaproxy-linux-x64/privaproxy --check
 ./dist/privaproxy-linux-x64/privaproxy
 ```
+
+On Windows, the built-in `tar.exe` is used to extract official archives. From
+PowerShell, build and run with:
+
+```powershell
+npm run build:portable
+.\dist\privaproxy-win32-x64\privaproxy.cmd --check
+.\dist\privaproxy-win32-x64\privaproxy.cmd
+```
+
+The Windows launcher finds its bundled executables relative to itself, supports
+folders containing spaces, passes CLI options through, and preserves the app's
+exit code. Keep the complete folder together. Add its directory to PATH to run
+`privaproxy` from Command Prompt or PowerShell. Windows 11 x64 is the initial
+desktop target; Windows ARM64 can be built on an ARM64 Windows host but is not
+covered by the hosted test job.
 
 Use `--output /path/to/a/new/folder` to choose a destination. Existing folders
 are never overwritten. The default Node runtime is 24.21.0 LTS; use
@@ -82,9 +99,10 @@ records runtime checksums, versions and dependency identities in `manifest.json`
 keeps runtime license notices, and runs the bundled command's dependency check
 before reporting success. No runtime files are downloaded at app startup.
 
-The builder supports Linux/macOS x64 and arm64; Linux x64 has been tested here.
-Windows portable builds are not implemented yet; the npm command is designed
-for npm's platform-specific executable links. Linux portable builds use the
+The builder supports Linux/macOS/Windows x64 and arm64; Linux x64 has been tested
+locally. Windows support should be treated as experimental until the hosted
+Windows checks pass. The npm command uses npm's platform-specific executable
+links. Linux portable builds use the
 standard glibc Node distribution, rather than an Alpine/musl build. OS libraries
 still need to meet the bundled runtimes' requirements. ffmpeg is not bundled;
 this app streams existing formats and plays separate video/audio directly, rather
@@ -97,6 +115,22 @@ to upstream sources, but redistribution must also satisfy the corresponding
 source and notice requirements. See [yt-dlp's distribution notes](https://github.com/yt-dlp/yt-dlp#licensing).
 Build a new folder to update the runtime; keep the same app origin to retain
 browser-local history and preferences.
+
+### Automated Windows verification
+
+The `Portable builds` GitHub Actions workflow runs on Windows Server 2025 x64 and
+Ubuntu 24.04 for pushes to `main`, pull requests, and manual dispatches. It runs
+the full test suite, builds with a path containing spaces and shell characters,
+checks the actual launcher with host runtimes absent from PATH, verifies local
+API/assets and process shutdown, and exercises browser workers/UI in headless
+Firefox with local fixtures. The Windows job also creates a ZIP, extracts it,
+and repeats the launcher checks before uploading a downloadable Actions artifact
+with a SHA-256 checksum. Windows Server coverage does not replace desktop testing
+or verify live YouTube availability. No GitHub releases are created automatically.
+
+Once this workflow is pushed, open **Actions → Portable builds**, select a
+successful run, and download **privaproxy-windows-x64** from its artifacts. Extract
+that artifact, then extract the inner Windows ZIP and run `privaproxy.cmd`.
 
 
 The server binds to `127.0.0.1` by default. Set `HOST` explicitly to change the

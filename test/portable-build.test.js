@@ -7,14 +7,39 @@ const path = require("node:path");
 const os = require("node:os");
 const { createHash } = require("node:crypto");
 const { once } = require("node:events");
-const { target, checksum, download } = require("../scripts/build-portable");
+const { target, launcherScript, validateArchivePaths, checksum, download } = require("../scripts/build-portable");
+const { launchSpec } = require("../scripts/process-utils");
 
 test("portable targets use standalone yt-dlp binaries rather than Python scripts", () => {
   assert.equal(target("linux", "x64").ytAsset, "yt-dlp_linux");
   assert.equal(target("linux", "arm64").ytAsset, "yt-dlp_linux_aarch64");
   assert.equal(target("darwin", "arm64").ytAsset, "yt-dlp_macos");
-  assert.throws(() => target("win32", "x64"), /currently support/);
+  assert.equal(target("win32", "x64").ytAsset, "yt-dlp.exe");
+  assert.equal(target("win32", "arm64").ytAsset, "yt-dlp_arm64.exe");
+  assert.equal(target("win32", "x64").archiveExtension, "zip");
+  assert.equal(target("win32", "x64").nodeRelative, "node.exe");
+  assert.equal(target("win32", "x64").npmRelative, "node_modules/npm/bin/npm-cli.js");
+  assert.throws(() => target("freebsd", "x64"), /currently support/);
   assert.throws(() => target("linux", "ia32"), /currently support/);
+});
+
+test("Windows smoke commands quote spaces/metacharacters without exposing request inputs to a shell", () => {
+  const file = "C:\\portable build & test!\\privaproxy.cmd";
+  const spec = launchSpec(file, ["--port", "0"], "win32");
+  assert.match(spec.file, /\\cmd\.exe$/);
+  assert.equal(spec.args[3], `""${file}" "--port" "0""`);
+  assert.equal(spec.options.windowsVerbatimArguments, true);
+  for (const bad of ['bad"path.cmd', "bad%PATH%.cmd", "bad\npath.cmd"]) assert.throws(() => launchSpec(bad, [], "win32"));
+  assert.deepEqual(launchSpec("node.exe", ["script.js"], "win32"), { file: "node.exe", args: ["script.js"], options: {} });
+  assert.match(launcherScript("win32"), /DisableDelayedExpansion\r\n/);
+  assert.match(launcherScript("win32"), /exit \/b %errorlevel%\r\n$/);
+});
+
+test("ZIP/tar entry validation accepts CRLF listings and rejects escaping paths", () => {
+  validateArchivePaths("node-root/\r\nnode-root/node.exe\r\nnode-root/node_modules/npm/\r\n", "node-root");
+  for (const entry of ["", "../evil", "/node-root/file", "node-root/../../evil", "node-root\\file", "node-root-other/file", "C:/node-root/file"]) {
+    assert.throws(() => validateArchivePaths(entry, "node-root"));
+  }
 });
 
 test("runtime checksum lookup requires an exact filename and valid SHA-256", () => {

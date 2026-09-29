@@ -184,6 +184,17 @@ for (const id of ids) if (table[id]) console.log(id + "|" + table[id]);
 process.exit(ids.every((id) => table[id]) ? 0 : 1);
 `);
   fs.chmodSync(bin, 0o755);
+  // Execute the fixture with Node explicitly: Windows cannot execute shebangs.
+  // Keep the real child-process/argument-array behavior on every platform.
+  const file = require.resolve("../server/youtube/ytdlp");
+  const fixtureModule = { exports: {} };
+  const realRequire = require("module").createRequire(file);
+  const realSpawn = require("child_process").spawn;
+  const injectedRequire = name => name === "child_process" ? {
+    spawn: (_command, args, options) => realSpawn(process.execPath, [bin, ...args], options),
+  } : realRequire(name);
+  require("vm").runInThisContext(require("module").wrap(fs.readFileSync(file, "utf8")), { filename: file })(fixtureModule.exports, injectedRequire, fixtureModule, file, path.dirname(file));
+  const yt = fixtureModule.exports;
   const saved = process.env.YTDLP_PATH;
   process.env.YTDLP_PATH = bin;
   try {
