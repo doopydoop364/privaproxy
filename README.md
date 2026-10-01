@@ -42,7 +42,7 @@ To inspect/build an installable npm release locally:
 ```bash
 npm pack --dry-run
 npm pack
-npm install -g ./privaproxy-1.1.0.tgz --ignore-scripts
+npm install -g ./privaproxy-1.2.0.tgz --ignore-scripts
 ```
 
 The dependencies ship their browser assets already built; installation scripts
@@ -192,12 +192,14 @@ server/
     hls.js                 # HLS proxy helpers: opaque-token URL registry + m3u8 rewriting
     routes.js              # /api/youtube/* routes, incl. the stream + HLS proxies
     sponsorblock.js        # SponsorBlock lookups (hash-prefix API, fixed host)
+  privasearch.js           # /api/privasearch/*: the server-side bridge to a PrivaSearch service
   config/
     proxies.json           # list of available proxy providers (shown in the UI dropdown)
 public/
   index.html               # single-page shell: Browser tab + YouTube tab
   css/style.css
   js/app.js                 # proxy picker, service worker registration, address bar
+  js/privasearch.js          # search-engine dropdown and the PrivaSearch results view
   js/youtube.js              # search, custom player + shortcuts, queue, feeds
   js/ytpure.js               # DOM-free player logic (unit tested)
   uv/uv.config.js             # tells Ultraviolet's client where the bare server is
@@ -273,6 +275,32 @@ closed immediately. Currently three are configured:
 - **Primary** (`/bare/`) — default local bare server, tests via `gstatic.com`
 - **Secondary** (`/bare2/`) — a second local instance for switching demo
 - **Tertiary** (`/bare/`) — third test URL via `cloudflare.com/cdn-cgi/trace`
+
+## Search engines and PrivaSearch
+
+Typed searches use the search engine chosen in the **Search with** dropdown beside the address bar (or in the **Search** tab, which has the same dropdown). The choice is remembered in this browser.
+
+- **DuckDuckGo** (the default, unchanged): the phrase opens DuckDuckGo's results page in the proxied browser, exactly as before.
+- **PrivaSearch** ([doopydoop364/privasearch](https://github.com/doopydoop364/privasearch)): an independent, self-hosted search engine that crawls through PrivaNet. Selecting it answers a typed search phrase (never an address) in the **Search** tab with PrivaSearch's results. Opening a result always loads it in the proxied browser, never by a direct navigation. If the index has little on the topic, PrivaSearch automatically starts crawling for the query and the page says so ("Expanding the PrivaSearch index for this query."); the page looks again a few times, four seconds apart, and then stops, so results appear as pages are indexed and nothing waits indefinitely.
+
+If PrivaSearch is not configured the option stays in the list, disabled and labelled "(not configured)". If PrivaSearch is down, the page shows "PrivaSearch is temporarily unavailable" and keeps any earlier results.
+
+### Configuring PrivaSearch
+
+Set these in the environment of the PrivaProxy server (not on a command line, never in a file in the repository):
+
+| Variable | Meaning |
+| --- | --- |
+| `PRIVASEARCH_URL` | Base URL of the PrivaSearch API, for example `http://127.0.0.1:4020`, or `https://search.example` when PrivaSearch runs elsewhere. Unset means "not configured". Credentials in the URL are refused. |
+| `PRIVASEARCH_TOKEN` | Optional. The bearer token, if PrivaSearch is run with `PRIVASEARCH_API_TOKEN`. It is only sent over `https`, or to a loopback address; any other `http` address with a token is refused at start with a message that names the setting and never prints its value. |
+
+```bash
+PRIVASEARCH_URL=http://127.0.0.1:4020 PRIVASEARCH_TOKEN=... npm start
+```
+
+Nothing about PrivaSearch reaches the browser: the browser calls this server's `/api/privasearch/config` (only `{"enabled":true|false}`) and `/api/privasearch/search?q=&offset=&limit=`; the server calls PrivaSearch, follows no redirects, waits at most 8 seconds, accepts at most 512 KiB, and returns only whitelisted, length-bounded fields (page text is untrusted and is rendered as plain text). Searches are limited to 30 per minute per client, and queries are never logged. When `PRIVAPROXY_PASSWORD` is set the route sits behind the same sign-in as the rest of `/api`.
+
+PrivaSearch's own setup (the service, its PrivaNet credentials, seeds): [its deployment guide](https://github.com/doopydoop364/privasearch/blob/main/docs/deployment.md).
 
 ## Backend latency checks
 
@@ -606,8 +634,9 @@ npm test
 
 Runs `node --test test/` (no extra dependencies): id validators, yt-dlp
 output parsing, HLS rewriting, SponsorBlock filtering, range capping, the pure
-player logic in `public/js/ytpure.js`, and the real `public/js/youtube.js`
-executed against a small fake DOM with canned API responses. The fake DOM
+player logic in `public/js/ytpure.js`, the real `public/js/youtube.js` and
+`public/js/privasearch.js` executed against a small fake DOM with canned API
+responses, and the PrivaSearch server route against a fake PrivaSearch. The fake DOM
 checks wiring and error-free execution; it cannot decode media, so real
 playback still needs checking in a browser. With a server running, you can also
 try `node scripts/smoke-live.js http://localhost:3000` to drive the client
