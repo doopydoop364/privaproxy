@@ -985,11 +985,20 @@ reloadBtn.addEventListener("click", () => {
 
 browseForm.addEventListener("submit", (e) => {
   e.preventDefault();
+  // With PrivaSearch selected, a typed search phrase (never a URL) is answered by the Search view instead of the proxied DuckDuckGo page.
+  if (window.privasearchUi?.handleAddressBar(urlInput.value)) return;
   if (!activeTabId) {
     createTab(urlInput.value);
     return;
   }
   navigateTab(activeTabId, urlInput.value);
 });
+
+// Hand-off for the Search view (public/js/privasearch.js): show a result, or a DuckDuckGo search, in the proxied browser. Always through the proxy.
+window.privaproxyBrowse = (target) => {
+  document.querySelector('.tab[data-view="browser"]')?.click();
+  if (!activeTabId) createTab(target);
+  else navigateTab(activeTabId, target);
+};
 
 restoreTabs(); // the tabs open at the end of the last session, or one empty tab

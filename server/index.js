@@ -5,6 +5,7 @@ const cors = require("cors");
 
 const proxyRegistry = require("./proxies/registry");
 const youtubeRoutes = require("./youtube/routes");
+const privasearch = require("./privasearch");
 const auth = require("./auth").createAuth();
 auth.setBareEndpoints(proxyRegistry.listWithStatus().map((entry) => entry.bareEndpoint));
 
@@ -24,6 +25,11 @@ app.get("/api/proxies", (req, res) => {
 });
 
 app.use("/api/youtube", youtubeRoutes);
+
+// --- PrivaSearch engine (PRIVASEARCH_URL / PRIVASEARCH_TOKEN stay on the server; the browser only sees /api/privasearch) ---
+const privasearchConfig = privasearch.readConfig();
+if (privasearchConfig.error) console.error(JSON.stringify({ event: "privasearch.config_invalid", reason: privasearchConfig.error }));
+app.use("/api/privasearch", privasearch.createRouter({ config: privasearchConfig.error ? { url: null } : privasearchConfig }));
 
 // --- Proxy providers (Ultraviolet etc.) mount themselves here ---
 proxyRegistry.mountAll(app, server, auth);
