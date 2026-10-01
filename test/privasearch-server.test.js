@@ -165,6 +165,7 @@ test("a flood from many clients cannot hold more than a fixed number of upstream
   const refused = (await Promise.race([Promise.all(requests.slice(4)), new Promise((r) => setTimeout(() => r(null), 3000))]));
   assert.ok(refused, "the requests past the cap are answered at once, not queued");
   assert.ok(refused.every((r) => r.status === 503 && r.body.error === "BUSY" && r.headers.get("retry-after")));
+  for (let i = 0; i < 200 && api.seen.length < 4; i++) await new Promise((r) => setTimeout(r, 25)); // the admitted four may still be connecting
   assert.equal(api.seen.length, 4, "only the capped number reached PrivaSearch");
   released = true; for (const res of held) reply(res);
   assert.ok((await Promise.all(requests.slice(0, 4))).every((r) => r.status === 200));
