@@ -5,7 +5,8 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const express = require("express");
-const { createRouter, readConfig, sanitize, limiter, clientKey } = require("../server/privasearch");
+const { createRouter, readConfig, sanitize, limiter } = require("../server/privasearch");
+const { clientKey } = require("../server/client-key");
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 const close = (server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); });

@@ -1,5 +1,6 @@
 "use strict";
 const express = require("express");
+const { clientKey } = require("./client-key");
 
 /**
  * PrivaSearch search engine integration (server side).
@@ -74,20 +75,6 @@ function limiter(max, now = Date.now) {
   };
 }
 
-/**
- * Who is searching, for the limiter. Behind a reverse proxy on the same machine every request arrives from the loopback address, so keying on the socket
- * would give all users one shared allowance (and let one user lock out the rest). A loopback peer is the operator's own proxy, which this app already
- * trusts for X-Forwarded-Proto (auth.js); the address that proxy appended, the LAST entry of X-Forwarded-For, names the real client. Earlier entries are
- * client-supplied and are ignored, and a peer that is not loopback is never believed about its headers.
- */
-function clientKey(req) {
-  const peer = req.socket.remoteAddress || "unknown";
-  if (!/^(127\.\d+\.\d+\.\d+|::1|::ffff:127\.\d+\.\d+\.\d+)$/i.test(peer)) return peer;
-  const forwarded = req.headers["x-forwarded-for"];
-  const last = typeof forwarded === "string" ? forwarded.split(",").pop().trim() : "";
-  return last && last.length <= 64 ? last : peer;
-}
-
 /** Reads at most `max` bytes of a response body; returns null (and cancels the download) as soon as it is exceeded, so a hostile or broken upstream cannot make this process buffer more. */
 async function readBounded(response, max) {
   const length = Number(response.headers.get("content-length"));
@@ -139,4 +126,4 @@ function createRouter(options = {}) {
   return router;
 }
 
-module.exports = { createRouter, readConfig, sanitize, limiter, clientKey, readBounded };
+module.exports = { createRouter, readConfig, sanitize, limiter, readBounded };
