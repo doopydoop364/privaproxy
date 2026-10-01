@@ -20,7 +20,7 @@ const { clientKey } = require("./client-key");
  * the answer size is bounded, and only whitelisted fields of the answer are passed on (page text is untrusted: the UI renders it as plain text).
  * Queries are never logged.
  */
-const MAX_QUERY = 200, MAX_BODY = 512 * 1024, TIMEOUT_MS = 8000, MAX_LIMIT = 20, MAX_OFFSET = 300;
+const MAX_QUERY = 200, MAX_BODY = 512 * 1024, TIMEOUT_MS = 8000, MAX_LIMIT = 20, MAX_OFFSET = 300, MAX_IN_FLIGHT = 32;
 const STATES = new Set(["ready", "partial", "empty"]);
 const CRAWL_STATES = new Set(["none", "scheduled", "cooldown", "busy", "rate_limited", "no_candidates", "disabled"]);
 const isLoopbackHost = (host) => /^(127\.\d+\.\d+\.\d+|localhost|\[?::1\]?)$/i.test(host);
@@ -95,6 +95,9 @@ function createRouter(options = {}) {
   const config = options.config ?? readConfig(options.env);
   const fetchImpl = options.fetch ?? fetch;
   const allow = limiter(options.perMinute ?? 30, options.now);
+  // The per-client limit does not bound the total: many clients, each within its allowance, could hold this many upstream searches open for the whole timeout
+  // against a PrivaSearch that answers slowly. Past the cap a search is refused at once instead of queueing behind them.
+  const maxInFlight = options.maxInFlight ?? MAX_IN_FLIGHT; let inFlight = 0;
   const router = express.Router();
   router.get("/config", (_req, res) => { res.set("Cache-Control", "no-store").json({ enabled: Boolean(config.url) }); });
   router.get("/search", async (req, res) => {
@@ -104,10 +107,12 @@ function createRouter(options = {}) {
     if (!q || q.length > MAX_QUERY) return res.status(400).json({ error: "BAD_QUERY" });
     if (!allow(clientKey(req))) return res.status(429).json({ error: "RATE_LIMITED" });
     const int = (name, fallback, min, max) => { const n = Number(req.query[name]); return Number.isInteger(n) ? Math.min(max, Math.max(min, n)) : fallback; };
+    if (inFlight >= maxInFlight) return res.status(503).set("Retry-After", "2").json({ error: "BUSY" });
     const target = new URL(`${config.url}/search`);
     target.searchParams.set("q", q);
     target.searchParams.set("limit", String(int("limit", 10, 1, MAX_LIMIT)));
     target.searchParams.set("offset", String(int("offset", 0, 0, MAX_OFFSET)));
+    inFlight++;
     try {
       const upstream = await fetchImpl(target, { redirect: "error", signal: AbortSignal.timeout(options.timeoutMs ?? TIMEOUT_MS),
         headers: { accept: "application/json", ...(config.token ? { authorization: `Bearer ${config.token}` } : {}) } });
@@ -121,7 +126,7 @@ function createRouter(options = {}) {
       return res.json(clean);
     } catch (error) {
       return res.status(error?.name === "TimeoutError" ? 504 : 502).json({ error: error?.name === "TimeoutError" ? "TIMEOUT" : "UNAVAILABLE" });
-    }
+    } finally { inFlight--; }
   });
   return router;
 }

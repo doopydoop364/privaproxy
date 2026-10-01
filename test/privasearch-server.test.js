@@ -155,3 +155,18 @@ test("behind a reverse proxy on this machine each client has its own allowance, 
   const allow = limiter(1, (() => { let t = 0; return () => t; })()); for (let i = 0; i < 2100; i++) allow(`k${i}`);
   assert.equal(allow("k2099"), false, "a client inside its window keeps its count when the table is pruned");
 });
+
+test("a flood from many clients cannot hold more than a fixed number of upstream searches open at once", async (t) => {
+  const held = []; let released = false;
+  const reply = (res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(good())); };
+  const api = await upstream(t, (_req, res) => { if (released) reply(res); else held.push(res); }); // holds every search until released
+  const router = await app(t, { config: { url: api.url }, perMinute: 1000, maxInFlight: 4, timeoutMs: 5000 });
+  const requests = Array.from({ length: 12 }, (_, i) => router.get(`/api/privasearch/search?q=flood${i}`));
+  const refused = (await Promise.race([Promise.all(requests.slice(4)), new Promise((r) => setTimeout(() => r(null), 3000))]));
+  assert.ok(refused, "the requests past the cap are answered at once, not queued");
+  assert.ok(refused.every((r) => r.status === 503 && r.body.error === "BUSY" && r.headers.get("retry-after")));
+  assert.equal(api.seen.length, 4, "only the capped number reached PrivaSearch");
+  released = true; for (const res of held) reply(res);
+  assert.ok((await Promise.all(requests.slice(0, 4))).every((r) => r.status === 200));
+  assert.equal((await router.get("/api/privasearch/search?q=after")).status, 200, "capacity is returned once searches finish");
+});

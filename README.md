@@ -298,6 +298,9 @@ Set these in the environment of the PrivaProxy server (not on a command line, ne
 PRIVASEARCH_URL=http://127.0.0.1:4020 PRIVASEARCH_TOKEN=... npm start
 ```
 
+The search route allows 30 searches per client per minute and at most 32 searches to PrivaSearch in flight at once across all clients; past that it answers `503 BUSY` at once instead of queueing.
+
+
 Nothing about PrivaSearch reaches the browser: the browser calls this server's `/api/privasearch/config` (only `{"enabled":true|false}`) and `/api/privasearch/search?q=&offset=&limit=`; the server calls PrivaSearch, follows no redirects, waits at most 8 seconds, accepts at most 512 KiB, and returns only whitelisted, length-bounded fields (page text is untrusted and is rendered as plain text). Searches are limited to 30 per minute per client, and queries are never logged. When `PRIVAPROXY_PASSWORD` is set the route sits behind the same sign-in as the rest of `/api`.
 
 PrivaSearch's own setup (the service, its PrivaNet credentials, seeds): [its deployment guide](https://github.com/doopydoop364/privasearch/blob/main/docs/deployment.md).
