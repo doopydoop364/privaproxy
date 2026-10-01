@@ -12,6 +12,7 @@
 
     <nav class="tabs" role="tablist">
       <button class="tab is-active" data-view="browser" role="tab">Browser</button>
+      <button class="tab" data-view="search" role="tab">Search</button>
       <button class="tab" data-view="youtube" role="tab">YouTube</button>
       <button class="tab" data-view="status" role="tab">Status</button>
     </nav>
@@ -49,6 +50,13 @@
         <button type="button" id="bookmarkBtn" class="nav-btn" title="Bookmark this page" disabled>&#9734;</button>
         <button type="submit">Go</button>
       </form>
+      <label class="search-engine-pick" title="Used when you type a search phrase instead of an address">
+        <span>Search with</span>
+        <select id="searchEnginePicker" aria-label="Search engine for typed searches">
+          <option value="duckduckgo">DuckDuckGo</option>
+          <option value="privasearch" disabled>PrivaSearch (not configured)</option>
+        </select>
+      </label>
     </div>
 
     <div class="frame-wrap" id="frameWrap">
@@ -63,6 +71,24 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- SEARCH VIEW (PrivaSearch results, or a hand-off to the browser for DuckDuckGo) -->
+  <section id="view-search" class="view search-view">
+    <form id="psForm" class="address-bar ps" role="search">
+      <input id="psInput" type="search" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Search the web..." aria-label="Search query" />
+      <button type="submit">Search</button>
+    </form>
+    <label class="search-engine-pick">
+      <span>Search engine</span>
+      <select id="psEngine" aria-label="Search engine">
+        <option value="duckduckgo">DuckDuckGo (opens in the browser through the proxy)</option>
+        <option value="privasearch" disabled>PrivaSearch (not configured)</option>
+      </select>
+    </label>
+    <p id="psStatus" class="ps-status" role="status" hidden></p>
+    <ol id="psResults" class="ps-results"></ol>
+    <button id="psMore" class="ps-more" type="button" hidden>More results</button>
   </section>
 
   <!-- YOUTUBE VIEW -->
@@ -187,6 +213,7 @@
   <script src="/scramjet/scramjet.all.js"></script>
   <script type="module" src="/js/app.js"></script>
   <script src="/vendor/hls/hls.min.js"></script>
+  <script src="/js/privasearch.js"></script>
   <script src="/js/ytpure.js"></script>
   <script src="/js/ytlearning.js"></script>
   <script src="/js/recommendations.js"></script>

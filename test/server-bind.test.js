@@ -18,6 +18,7 @@ function start(env = {}) {
     http: { createServer: () => server }, path, express, cors: () => {},
     "./proxies/registry": { mountAll() {}, listWithStatus: () => [], startLatencyChecks: origin => checkOrigin = origin },
     "./youtube/routes": {},
+    "./privasearch": { readConfig: () => ({ url: null }), createRouter: () => ({}) },
     "./auth": { createAuth: () => ({ enabled: false, mount() {}, setBareEndpoints() {} }) },
   };
   const requireMock = name => modules[name];
