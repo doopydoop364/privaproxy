@@ -66,9 +66,42 @@ function limiter(max, now = Date.now) {
   const seen = new Map();
   return (key) => {
     const t = now(); const entry = seen.get(key);
-    if (!entry || t - entry.start >= 60000) { if (seen.size > 2000) seen.clear(); seen.set(key, { start: t, count: 1 }); return true; }
+    if (!entry || t - entry.start >= 60000) {
+      if (seen.size > 2000) { for (const [k, v] of seen) if (t - v.start >= 60000) seen.delete(k); if (seen.size > 2000) seen.clear(); } // drop expired windows first; only a flood of live clients resets everyone
+      seen.set(key, { start: t, count: 1 }); return true;
+    }
     return ++entry.count <= max;
   };
+}
+
+/**
+ * Who is searching, for the limiter. Behind a reverse proxy on the same machine every request arrives from the loopback address, so keying on the socket
+ * would give all users one shared allowance (and let one user lock out the rest). A loopback peer is the operator's own proxy, which this app already
+ * trusts for X-Forwarded-Proto (auth.js); the address that proxy appended, the LAST entry of X-Forwarded-For, names the real client. Earlier entries are
+ * client-supplied and are ignored, and a peer that is not loopback is never believed about its headers.
+ */
+function clientKey(req) {
+  const peer = req.socket.remoteAddress || "unknown";
+  if (!/^(127\.\d+\.\d+\.\d+|::1|::ffff:127\.\d+\.\d+\.\d+)$/i.test(peer)) return peer;
+  const forwarded = req.headers["x-forwarded-for"];
+  const last = typeof forwarded === "string" ? forwarded.split(",").pop().trim() : "";
+  return last && last.length <= 64 ? last : peer;
+}
+
+/** Reads at most `max` bytes of a response body; returns null (and cancels the download) as soon as it is exceeded, so a hostile or broken upstream cannot make this process buffer more. */
+async function readBounded(response, max) {
+  const length = Number(response.headers.get("content-length"));
+  if (Number.isFinite(length) && length > max) { await response.body?.cancel().catch(() => {}); return null; }
+  if (!response.body) return "";
+  const reader = response.body.getReader(); const chunks = []; let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function createRouter(options = {}) {
@@ -82,7 +115,7 @@ function createRouter(options = {}) {
     if (!config.url) return res.status(503).json({ error: "NOT_CONFIGURED" });
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     if (!q || q.length > MAX_QUERY) return res.status(400).json({ error: "BAD_QUERY" });
-    if (!allow(req.socket.remoteAddress || "unknown")) return res.status(429).json({ error: "RATE_LIMITED" });
+    if (!allow(clientKey(req))) return res.status(429).json({ error: "RATE_LIMITED" });
     const int = (name, fallback, min, max) => { const n = Number(req.query[name]); return Number.isInteger(n) ? Math.min(max, Math.max(min, n)) : fallback; };
     const target = new URL(`${config.url}/search`);
     target.searchParams.set("q", q);
@@ -93,8 +126,8 @@ function createRouter(options = {}) {
         headers: { accept: "application/json", ...(config.token ? { authorization: `Bearer ${config.token}` } : {}) } });
       if (upstream.status === 401 || upstream.status === 403) return res.status(502).json({ error: "UPSTREAM_REFUSED" }); // a configuration problem on this server, not something to show the user a token about
       if (!upstream.ok) return res.status(502).json({ error: "UNAVAILABLE" });
-      const raw = await upstream.text();
-      if (raw.length > MAX_BODY) return res.status(502).json({ error: "UNAVAILABLE" });
+      const raw = await readBounded(upstream, MAX_BODY);
+      if (raw === null) return res.status(502).json({ error: "UNAVAILABLE" });
       let body; try { body = JSON.parse(raw); } catch { return res.status(502).json({ error: "UNAVAILABLE" }); }
       const clean = sanitize(body);
       if (!clean) return res.status(502).json({ error: "UNAVAILABLE" });
@@ -106,4 +139,4 @@ function createRouter(options = {}) {
   return router;
 }
 
-module.exports = { createRouter, readConfig, sanitize, limiter };
+module.exports = { createRouter, readConfig, sanitize, limiter, clientKey, readBounded };
