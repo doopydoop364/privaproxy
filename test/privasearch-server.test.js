@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const express = require("express");
-const { createRouter, readConfig, sanitize, limiter } = require("../server/privasearch");
+const { createRouter, readConfig, sanitize, limiter, clientKey } = require("../server/privasearch");
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 const close = (server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); });
@@ -22,7 +22,7 @@ async function app(t, options) {
   const server = http.createServer(express().use("/api/privasearch", createRouter(options)));
   const port = await listen(server); t.after(() => close(server));
   const get = async (p) => { const r = await fetch(`http://127.0.0.1:${port}${p}`); const text = await r.text(); let body; try { body = JSON.parse(text); } catch { body = text; } return { status: r.status, body, headers: r.headers, text }; };
-  return { get };
+  return { get, base: `http://127.0.0.1:${port}` };
 }
 const good = (extra = {}) => ({
   apiVersion: 1, query: "rust", total: 2, offset: 0, limit: 10,
@@ -113,4 +113,44 @@ test("the app wires the route after authentication and the credential never appe
     const text = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
     assert.equal(/PRIVASEARCH_(URL|TOKEN)|authorization|Bearer/i.test(text), false, `${file} must not know the PrivaSearch address or credential`);
   }
+});
+
+test("an upstream that never stops sending is cut off at the size limit instead of being buffered until the timeout", async (t) => {
+  let written = 0, closed = false;
+  const up = await upstream(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.on("close", () => { closed = true; });
+    const chunk = Buffer.alloc(64 * 1024, 120);
+    const pump = () => { if (closed || written > 64 * 1024 * 1024) return; if (res.write(chunk)) { written += chunk.length; setImmediate(pump); } else res.once("drain", () => { written += chunk.length; pump(); }); };
+    pump();
+  });
+  const api = await app(t, { config: { url: up.url }, timeoutMs: 5000 });
+  const started = Date.now(); const r = await api.get("/api/privasearch/search?q=x");
+  assert.deepEqual([r.status, r.body], [502, { error: "UNAVAILABLE" }]); // the size limit, not the 5 s timeout
+  assert.ok(Date.now() - started < 3000, "answered long before the timeout");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(written < 4 * 1024 * 1024, `the download was cancelled near the limit (${written} bytes were sent)`);
+  assert.equal(closed, true, "the connection to the upstream was closed");
+});
+
+test("a declared oversized body is refused without reading it", async (t) => {
+  const up = await upstream(t, (_req, res) => { res.writeHead(200, { "content-type": "application/json", "content-length": String(10 * 1024 * 1024) }); res.write("{"); });
+  const api = await app(t, { config: { url: up.url }, timeoutMs: 5000 });
+  const started = Date.now(); const r = await api.get("/api/privasearch/search?q=x");
+  assert.deepEqual([r.status, r.body], [502, { error: "UNAVAILABLE" }]); assert.ok(Date.now() - started < 2000);
+});
+
+test("behind a reverse proxy on this machine each client has its own allowance, and only the address the proxy appended is believed", async (t) => {
+  const up = await upstream(t, json(good()));
+  const api = await app(t, { config: { url: up.url }, perMinute: 2 });
+  const send = async (forwarded) => (await fetch(`${api.base}/api/privasearch/search?q=x`, { headers: forwarded ? { "x-forwarded-for": forwarded } : {} })).status;
+  assert.deepEqual([await send("203.0.113.5"), await send("203.0.113.5"), await send("203.0.113.5")], [200, 200, 429]);
+  assert.equal(await send("203.0.113.6"), 200, "another client behind the same proxy is not locked out by the first");
+  assert.equal(await send("1.1.1.1, 203.0.113.5"), 429, "client-supplied earlier entries cannot be used to get a fresh allowance");
+  assert.equal(await send("9.9.9.9, 203.0.113.5"), 429);
+  assert.deepEqual([await send(), await send(), await send()], [200, 200, 429], "no header: the socket address");
+  assert.equal(clientKey({ socket: { remoteAddress: "198.51.100.7" }, headers: { "x-forwarded-for": "203.0.113.5" } }), "198.51.100.7", "a peer that is not the local proxy is not believed");
+  assert.equal(clientKey({ socket: { remoteAddress: "::ffff:127.0.0.1" }, headers: { "x-forwarded-for": "203.0.113.5" } }), "203.0.113.5");
+  const allow = limiter(1, (() => { let t = 0; return () => t; })()); for (let i = 0; i < 2100; i++) allow(`k${i}`);
+  assert.equal(allow("k2099"), false, "a client inside its window keeps its count when the table is pruned");
 });
