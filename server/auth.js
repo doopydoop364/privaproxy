@@ -1,6 +1,7 @@
 "use strict";
 const crypto = require("node:crypto");
 const express = require("express");
+const { clientKey } = require("./client-key");
 
 function createAuth(password = process.env.PRIVAPROXY_PASSWORD) {
   const enabled = typeof password === "string" && password.length > 0;
@@ -75,7 +76,7 @@ function createAuth(password = process.env.PRIVAPROXY_PASSWORD) {
         try { if (new URL(origin).host !== req.headers.host) return res.sendStatus(403); }
         catch { return res.sendStatus(403); }
       }
-      const ip = req.socket.remoteAddress || "unknown";
+      const ip = clientKey(req);
       const now = Date.now();
       const state = attempts.get(ip) || { count: 0, since: now };
       if (attempts.size > 1000) attempts.delete(attempts.keys().next().value);

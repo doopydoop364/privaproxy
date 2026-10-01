@@ -51,3 +51,23 @@ test("optional sign-in protects API and proxy paths, and checks WebSocket origin
     assert.equal((await fetch(`${origin}${auth.internalBareEndpoint("/bare/")}v3/`)).status, 200);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
+
+test("behind a reverse proxy on this machine, failed sign-ins are counted per client, so one client cannot lock everyone (the owner included) out", async () => {
+  const auth = createAuth("test-password");
+  const app = express(); auth.mount(app);
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    // What the operator's TLS proxy sends: the connection is from loopback, with the scheme and the client address it saw.
+    const post = (password, client) => fetch(`${origin}/login`, { method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-proto": "https", "x-forwarded-for": client }, body: new URLSearchParams({ password }) });
+    for (let i = 0; i < 10; i++) assert.equal((await post("wrong", "203.0.113.9")).status, 401);
+    assert.equal((await post("wrong", "203.0.113.9")).status, 429, "the attacker is locked out");
+    assert.equal((await post("test-password", "203.0.113.9")).status, 429, "even with the right password while locked out");
+    assert.equal((await post("test-password", "198.51.100.4")).status, 303, "the owner, from another address behind the same proxy, can still sign in");
+    assert.equal((await post("wrong", "9.9.9.9, 203.0.113.9")).status, 429, "a client-supplied leading address does not give the locked-out client a fresh allowance");
+    assert.equal((await post("test-password", "198.51.100.4")).status, 303, "and the owner's success does not reset the attacker's count");
+    assert.equal((await post("test-password", "203.0.113.9")).status, 429);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
