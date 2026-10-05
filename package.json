@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
     "start": "node server/index.js",
-    "build:portable": "node scripts/build-portable.js"
+    "build:portable": "node scripts/build-portable.js",
+    "build:server-release": "node scripts/build-server-release.js"
   },
   "keywords": [],
   "author": "",
@@ -39,7 +40,10 @@
     "public/css/*.css",
     "public/js/*.js",
     "public/uv/*.js",
-    "public/scramjet/*.js"
+    "public/scramjet/*.js",
+    "deploy/systemd/*.service",
+    "deploy/env/*.example",
+    "deploy/install/*.sh"
   ],
   "repository": {
     "type": "git",

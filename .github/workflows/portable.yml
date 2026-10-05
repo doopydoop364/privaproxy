@@ -46,6 +46,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Portable launcher checks failed' }
       - name: Verify browser workers and UI in headless Firefox
         run: node scripts/run-firefox-smoke.js
+      - name: Build updater-compatible server release
+        if: runner.os == 'Linux'
+        run: npm run build:server-release
+      - name: Verify updater-compatible server release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          ARCHIVE="dist/server/privaproxy-${VERSION}.tar.gz"
+          test -f "$ARCHIVE"
+          test -f dist/server/SHA256SUMS.txt
+          grep -F "privaproxy-${VERSION}.tar.gz" dist/server/SHA256SUMS.txt
+          tar -tzf "$ARCHIVE" | grep -F "privaproxy-${VERSION}/bin/privaproxy.js"
+          tar -tzf "$ARCHIVE" | grep -F "privaproxy-${VERSION}/package-lock.json"
+          tar -tzf "$ARCHIVE" | grep -F "privaproxy-${VERSION}/deploy/systemd/privaproxy.service"
+      - name: Upload verified server release
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: privaproxy-server-release
+          path: |
+            dist/server/privaproxy-*.tar.gz
+            dist/server/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
       - name: Package and verify extracted Windows ZIP
         if: runner.os == 'Windows'
         shell: pwsh

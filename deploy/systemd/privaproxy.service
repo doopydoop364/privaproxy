@@ -1,0 +1,33 @@
+[Unit]
+Description=PrivaProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=privaproxy
+Group=privaproxy
+WorkingDirectory=/opt/privaproxy
+ExecStart=/usr/bin/env node /opt/privaproxy/bin/privaproxy.js
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=PRIVAPROXY_DATA_DIR=/var/lib/privaproxy
+Environment=HOME=/var/lib/privaproxy
+Environment=XDG_CACHE_HOME=/var/lib/privaproxy/cache
+Environment=PATH=/usr/local/bin:/opt/node/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/privaproxy/privaproxy.env
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/privaproxy
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

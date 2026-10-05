@@ -52,6 +52,42 @@ files, dependency folders, `.env` files and portable builds are excluded. Review
 the package file list and configuration before publishing. The npm package does
 not include Node or yt-dlp; the portable distribution below does.
 
+### Managed Linux server deployment
+
+For a long-running Linux service, PrivaProxy also ships a managed-server layout
+compatible with the PrivaNet updater. Mutable data and secrets live outside the
+release directory:
+
+- program releases: `/opt/privaproxy-<version>`
+- active release symlink: `/opt/privaproxy`
+- configuration: `/etc/privaproxy/privaproxy.env`
+- mutable data: `/var/lib/privaproxy`
+
+Build the updater-compatible archive with:
+
+```bash
+npm run build:server-release
+```
+
+This creates `dist/server/privaproxy-<version>.tar.gz` and
+`dist/server/SHA256SUMS.txt`. The archive root is exactly
+`privaproxy-<version>/`, includes `package-lock.json`, and excludes mutable
+state, secrets, `node_modules`, and local `.env` files. Published GitHub releases
+automatically receive these two assets after the repository test suite passes.
+
+For an initial server install, unpack a verified server archive somewhere outside
+`/opt`, review `/etc/privaproxy/privaproxy.env`, then run:
+
+```bash
+sudo ./deploy/install/install-server.sh --enable
+```
+
+The installer creates the dedicated `privaproxy` system user, installs a
+root-owned immutable release, creates `/opt/privaproxy`, installs the hardened
+`privaproxy.service`, and preserves any existing `/etc/privaproxy/privaproxy.env`.
+Future program updates are then handled by the PrivaNet updater; state/config
+remain external and are backed up separately.
+
 ### Portable download with bundled runtimes
 
 The builder creates a portable folder containing the app, locked production npm
